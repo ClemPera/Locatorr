@@ -1,0 +1,27 @@
+name: crypto-core-ci
+
+on:
+  push:
+    paths:
+      - "crypto-core/**"
+      - ".github/workflows/crypto-core-ci.yml"
+  pull_request:
+    paths:
+      - "crypto-core/**"
+      - ".github/workflows/crypto-core-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crypto-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo build --verbose
+      - run: cargo test --verbose
+      - run: cargo clippy -- -D warnings

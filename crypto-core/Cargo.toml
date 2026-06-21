@@ -1,0 +1,15 @@
+[package]
+name = "locatorr-crypto"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+ml-kem = { version = "0.3.2", features = ["getrandom"] }
+ml-dsa = { version = "0.1.1", features = ["rand_core", "getrandom"] }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+aes-gcm = "0.10.3"
+hkdf = "0.13.0"
+sha2 = "0.10"
+rand = "0.8"
+rand_core = { version = "0.6", features = ["getrandom"] }
