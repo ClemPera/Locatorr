@@ -13,6 +13,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: crypto-core
@@ -21,7 +23,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
       - run: cargo fmt --check
-      - run: cargo build --verbose
-      - run: cargo test --verbose
-      - run: cargo clippy -- -D warnings
+
+      - name: build
+        run: cargo build --verbose 2>&1 | tee /tmp/build.log
+
+      - name: test
+        run: cargo test --verbose 2>&1 | tee /tmp/test.log
+
+      - name: clippy
+        run: cargo clippy -- -D warnings 2>&1 | tee /tmp/clippy.log
+
+      # The Actions log viewer's storage backend isn't reachable from the sandbox this repo is
+      # being developed from, so on failure, also post the relevant log as a commit comment
+      # (the API is reachable). Remove this once that's no longer a constraint.
+      - name: report failure as commit comment
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const candidates = ['/tmp/build.log', '/tmp/test.log', '/tmp/clippy.log'];
+            let logPath = null;
+            for (const c of candidates) {
+              if (fs.existsSync(c) && fs.statSync(c).size > 0) logPath = c;
+            }
+            if (!logPath) return;
+            let logText = fs.readFileSync(logPath, 'utf8');
+            if (logText.length > 60000) logText = logText.slice(-60000);
+            const step = logPath.split('/').pop().replace('.log', '');
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: `crypto-core-ci failed at \`${step}\`:\n\n\`\`\`\n${logText}\n\`\`\``,
+            });
