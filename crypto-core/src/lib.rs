@@ -8,10 +8,10 @@
 //! - `envelope`: encrypt/decrypt a single location share to/from one recipient
 //!
 //! None of this has been compiled in the environment it was written in (sandbox toolchain is
-//! Rust 1.75; ml-kem/ml-dsa need 1.85+ for edition2024). Run `cargo build` and `cargo test`
-//! locally as the very first step, before anything else. A few call sites are marked
-//! `TODO(verify)` where I could not fully confirm an exact method name from documentation
-//! alone — grep for that string and check each one against `cargo doc --open`.
+//! Rust 1.75; ml-kem/ml-dsa need 1.85+ for edition2024). The API calls were verified against
+//! the actual cloned source of the pinned crate versions (see identity.rs module doc), not just
+//! documentation text, but that's still not a substitute for the type checker. Run `cargo build
+//! && cargo test` locally as the first real check.
 
 pub mod envelope;
 pub mod identity;
@@ -38,10 +38,12 @@ mod tests {
         // Sharing: Alice encrypts a location for Bob.
         let payload = br#"{"lat":48.8566,"lon":2.3522,"accuracy":5,"ts":1781000000}"#;
         let share =
-            envelope::share_location(&alice, &bob_pub.x25519_pub, &bob_pub.kem_pub, payload);
+            envelope::share_location(&alice, &bob_pub.x25519_pub, &bob_pub.kem_pub, payload)
+                .expect("share_location should succeed with valid recipient keys");
 
         // Bob decrypts it using Alice's x25519 public key (from his local contacts table).
-        let decrypted = envelope::receive_location(&bob, &alice_pub.x25519_pub, &share);
+        let decrypted = envelope::receive_location(&bob, &alice_pub.x25519_pub, &share)
+            .expect("receive_location should succeed for a share addressed to bob");
         assert_eq!(decrypted, payload);
 
         // Auth: Alice signs a server nonce, anyone can verify it against her public key.
