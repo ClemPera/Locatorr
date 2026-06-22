@@ -7,11 +7,11 @@
 //! - `pairing`: compute the verification fingerprint shown during contact pairing
 //! - `envelope`: encrypt/decrypt a single location share to/from one recipient
 //!
-//! None of this has been compiled in the environment it was written in (sandbox toolchain is
-//! Rust 1.75; ml-kem/ml-dsa need 1.85+ for edition2024). The API calls were verified against
-//! the actual cloned source of the pinned crate versions (see identity.rs module doc), not just
-//! documentation text, but that's still not a substitute for the type checker. Run `cargo build
-//! && cargo test` locally as the first real check.
+//! `cargo build`/`cargo test`/`cargo clippy -- -D warnings` all pass in CI
+//! (.github/workflows/crypto-core-ci.yml). This could not be compiled in the sandbox it was
+//! originally written in (rustc 1.75; these crates need 1.85+ for edition2024), so the API was
+//! verified directly against the cloned RustCrypto source before CI confirmed it — see
+//! identity.rs module doc for specifics.
 
 pub mod envelope;
 pub mod identity;

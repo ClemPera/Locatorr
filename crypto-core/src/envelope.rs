@@ -2,12 +2,10 @@
 //! key agreement (via HKDF) into a wrap_key, use that to wrap a random per-message content key
 //! (CK), and use CK to AES-256-GCM-encrypt the actual location payload.
 //!
-//! Same verification status as identity.rs: confirmed against the actual cloned source of
-//! ml-kem 0.3.2 / x25519-dalek 2.0.1 / aes-gcm 0.10.3 / hkdf 0.13.0, not just docs text, but
-//! still never compiled (see identity.rs module doc for why). `EncapsulationKey` construction
-//! from raw bytes uses `TryKeyInit::new_from_slice`, and decapsulation uses the `Decapsulate`
-//! trait's `decapsulate_slice` convenience (handles the length check), not the manual
-//! `Array`/`Ciphertext` conversions an earlier pass guessed at.
+//! Same verification status as identity.rs (confirmed via CI, not just source read-through):
+//! `EncapsulationKey` construction from raw bytes uses `TryKeyInit::new_from_slice`, and
+//! decapsulation uses the `Decapsulate` trait's `decapsulate_slice` convenience (handles the
+//! length check), not the manual `Array`/`Ciphertext` conversions an earlier pass guessed at.
 
 use aes_gcm::aead::{Aead, KeyInit as AeadKeyInit, OsRng as AeadOsRng};
 use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce};

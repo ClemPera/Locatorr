@@ -10,10 +10,11 @@
 //! error); `EncapsulationKey` is constructed via `TryKeyInit::new_from_slice(&[u8]) ->
 //! Result<Self, _>`, not a `from_bytes` method that doesn't exist.
 //!
-//! Still genuinely not done: this has not been compiled. Both crates need Rust 1.85+/
-//! edition2024; the sandbox this was written in only had rustc 1.75 (apt's latest). Run
-//! `cargo build && cargo test` locally — the source-level read-through is thorough but isn't a
-//! substitute for the type checker.
+//! Confirmed via CI: `cargo build`, `cargo test`, and `cargo clippy -- -D warnings` all pass
+//! (.github/workflows/crypto-core-ci.yml). This was not compiled where it was originally
+//! written — a sandboxed environment with only rustc 1.75 available; both crates need Rust
+//! 1.85+/edition2024 — so the source-level read-through above happened before CI could confirm
+//! it, not instead of that confirmation.
 //!
 //! Pin exactly ml-dsa = "0.1.1" (or newer) in Cargo.lock. Versions <= 0.1.0-rc.3 had a real,
 //! moderate-severity signature-malleability bug (CVE-2026-24850, GHSA-5x2r-hc65-25f9), fixed in

@@ -8,8 +8,10 @@ Standalone crate, no Tauri dependency, so it builds and tests without the webvie
 
 ## Build status
 
-Has not been compiled where it was written (sandboxed environment with only rustc 1.75; these
-crates need 1.85+ for edition2024). The API usage was checked twice:
+Confirmed via CI (`.github/workflows/crypto-core-ci.yml`): `cargo build`, `cargo test`, and
+`cargo clippy -- -D warnings` all pass. This couldn't be compiled where it was originally
+written (a sandboxed environment with only rustc 1.75; these crates need 1.85+ for
+edition2024), so the API usage was checked twice before CI confirmed it:
 
 1. Against the official docs.rs usage examples for `ml-kem` 0.3.2 and `ml-dsa` 0.1.1.
 2. Against the actual cloned source of the pinned versions (RustCrypto/KEMs, RustCrypto/signatures,
@@ -18,15 +20,8 @@ crates need 1.85+ for edition2024). The API usage was checked twice:
    `EncapsulationKey` is constructed via `TryKeyInit::new_from_slice(&[u8])`, not a `from_bytes`
    method that doesn't exist.
 
-Run this first, before building anything else on top of it:
-
-```
-cargo build && cargo test
-```
-
 `round_trip_share_and_decrypt` in `src/lib.rs` exercises pairing, sharing, decrypting, and
-signature verification end to end in one test. If it passes, the crate does what sections 3-5 of
-the design doc describe.
+signature verification end to end in one test, and passes.
 
 ## Known gaps
 
