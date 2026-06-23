@@ -60,4 +60,30 @@ mod tests {
             &sig
         ));
     }
+
+    #[test]
+    fn identity_survives_a_save_and_reload() {
+        let original = identity::Identity::generate();
+        let original_pub = original.public_bundle();
+
+        let saved = original.to_bytes();
+        let reloaded =
+            identity::Identity::from_bytes(&saved).expect("reload should succeed from valid bytes");
+        let reloaded_pub = reloaded.public_bundle();
+
+        // Same identity in, same public bundle out: this is what the SQLite-backed Tauri
+        // command relies on (generate once, persist, reload on every subsequent launch).
+        assert_eq!(original_pub.ml_dsa_pub, reloaded_pub.ml_dsa_pub);
+        assert_eq!(original_pub.kem_pub, reloaded_pub.kem_pub);
+        assert_eq!(original_pub.x25519_pub, reloaded_pub.x25519_pub);
+
+        // And the reloaded key can still sign in a way the original public key verifies.
+        let nonce = b"another-nonce";
+        let sig = reloaded.sign_challenge(nonce);
+        assert!(identity::verify_signature(
+            &original_pub.ml_dsa_pub,
+            nonce,
+            &sig
+        ));
+    }
 }

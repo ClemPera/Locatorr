@@ -22,10 +22,10 @@
 //! (stated in both crates' own docs), which is a real factor in the "should this be hybrid"
 //! decision in the design doc, not just a box to tick.
 
-use ml_dsa::KeyInit as _;
 use ml_dsa::{Generate, Keypair, MlDsa65, Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use ml_kem::KeyExport as _;
+use ml_dsa::{KeyExport as _, KeyInit as _};
 use ml_kem::{Decapsulate, DecapsulationKey, EncapsulationKey, Kem, MlKem768};
+use ml_kem::{KeyExport as _, KeyInit as _};
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 
@@ -44,6 +44,15 @@ pub struct PublicBundle {
     pub ml_dsa_pub: Vec<u8>,
     pub kem_pub: Vec<u8>,
     pub x25519_pub: [u8; 32],
+}
+
+/// Private key material for persisting an `Identity` across app restarts. The caller (the
+/// Tauri layer) owns encrypting this at rest, per design doc section 3 — this crate has no
+/// opinion on storage, it just gives you the bytes.
+pub struct IdentityBytes {
+    pub ml_dsa_priv: Vec<u8>,
+    pub kem_decap_priv: Vec<u8>,
+    pub x25519_priv: [u8; 32],
 }
 
 impl Identity {
@@ -65,6 +74,32 @@ impl Identity {
             kem_pub: self.kem_encap_key.to_bytes().to_vec(),
             x25519_pub: X25519Public::from(&self.x25519_secret).to_bytes(),
         }
+    }
+
+    pub fn to_bytes(&self) -> IdentityBytes {
+        IdentityBytes {
+            ml_dsa_priv: self.signing_key.to_bytes().to_vec(),
+            kem_decap_priv: self.kem_decap_key.to_bytes().to_vec(),
+            x25519_priv: self.x25519_secret.to_bytes(),
+        }
+    }
+
+    /// Reload a previously-generated identity. Only the decapsulation (private) key is stored
+    /// for the KEM half; the encapsulation (public) key is re-derived from it on load rather
+    /// than stored separately, since `DecapsulationKey::encapsulation_key()` already gives it.
+    pub fn from_bytes(bytes: &IdentityBytes) -> Result<Self, &'static str> {
+        let signing_key = SigningKey::<MlDsa65>::new_from_slice(&bytes.ml_dsa_priv)
+            .map_err(|_| "ml_dsa_priv: wrong length for MlDsa65")?;
+        let kem_decap_key = DecapsulationKey::<MlKem768>::new_from_slice(&bytes.kem_decap_priv)
+            .map_err(|_| "kem_decap_priv: wrong length for MlKem768")?;
+        let kem_encap_key = kem_decap_key.encapsulation_key().clone();
+        let x25519_secret = X25519Secret::from(bytes.x25519_priv);
+        Ok(Self {
+            signing_key,
+            kem_decap_key,
+            kem_encap_key,
+            x25519_secret,
+        })
     }
 
     /// Sign a server-issued auth nonce. See server's POST /v1/auth/verify.
