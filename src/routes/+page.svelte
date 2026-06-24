@@ -1,156 +1,125 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
+  import { listReceivedLocations, type ReceivedLocation } from "$lib/api";
+  import { contacts, refreshContacts } from "$lib/stores";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let locations = $state<ReceivedLocation[]>([]);
+  let loading = $state(true);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  async function refresh() {
+    loading = true;
+    try {
+      locations = await listReceivedLocations();
+    } finally {
+      loading = false;
+    }
   }
+
+  function nicknameFor(contactId: string): string {
+    return $contacts.find((c) => c.id === contactId)?.nickname ?? contactId;
+  }
+
+  function ageLabel(updatedAt: number): string {
+    const seconds = Math.floor(Date.now() / 1000) - updatedAt;
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    return `${Math.floor(seconds / 3600)}h ago`;
+  }
+
+  onMount(() => {
+    refresh();
+    refreshContacts();
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<header class="page-head">
+  <p class="eyebrow">live</p>
+  <h1>Who's sharing with you</h1>
+</header>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+{#if loading}
+  <p>Reading the log…</p>
+{:else if locations.length === 0}
+  <div class="panel empty-state">
+    <span class="live-dot" style="background: var(--fg-faint); box-shadow: none"></span>
+    <h2>Nothing logged yet</h2>
+    <p>
+      Once a contact shares their location with you, their last known position shows up here.
+      Pair with someone first, then ask them to turn sharing on for you.
+    </p>
+    <a href="/pair"><button class="primary">Pair with someone</button></a>
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+{:else}
+  <div class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Contact</th>
+          <th>Latitude</th>
+          <th>Longitude</th>
+          <th>Accuracy</th>
+          <th>Last fix</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each locations as loc}
+          <tr>
+            <td>{nicknameFor(loc.contact_id)}</td>
+            <td class="data">{loc.lat.toFixed(5)}</td>
+            <td class="data">{loc.lon.toFixed(5)}</td>
+            <td class="data">±{loc.accuracy.toFixed(0)}m</td>
+            <td class="data">{ageLabel(loc.updated_at)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
+{/if}
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  .page-head {
+    margin-bottom: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
   }
 
-  a:hover {
-    color: #24c8db;
+  table {
+    width: 100%;
+    border-collapse: collapse;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  th {
+    text-align: left;
+    font-family: var(--font-data);
+    font-size: var(--text-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    font-weight: 500;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line);
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  td {
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--line);
+    font-size: var(--text-sm);
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  .empty-state h2 {
+    margin-top: var(--space-2);
+  }
+
+  .empty-state p {
+    max-width: 32rem;
+  }
+
+  .empty-state button {
+    margin-top: var(--space-2);
+  }
 </style>
