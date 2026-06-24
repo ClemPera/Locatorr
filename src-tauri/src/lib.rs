@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod relay;
 
 use std::sync::Mutex;
 
@@ -16,6 +17,7 @@ pub fn run() {
             let conn = db::open_and_migrate(&data_dir.join("locatorr.sqlite"))?;
             app.manage(AppState {
                 conn: Mutex::new(conn),
+                relay_user_id: Mutex::new(String::new()),
             });
             Ok(())
         })
@@ -30,6 +32,10 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::list_received_locations,
+            commands::register_with_relay,
+            commands::authenticate_with_relay,
+            commands::send_location_update,
+            commands::poll_inbox_for_locations,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

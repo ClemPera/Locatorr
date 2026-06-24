@@ -1,12 +1,10 @@
-//! Local SQLite schema, matching design doc section 8's client data model. One deliberate
-//! difference from that doc for this first pass: `received_locations` and the network polling
-//! that would populate it aren't wired up yet (no HTTP client to the relay server in this
-//! commit), so that table exists and is queried, it's just genuinely empty until that lands.
+//! Local SQLite schema. One table per design concern: identity key material, paired contacts,
+//! key-value settings, and received location shares populated by the relay HTTP client.
 //!
-//! KNOWN GAP, flagged rather than silently shipped: the design doc says private key material
-//! should be encrypted at rest via the OS keychain. This stores it as a plain BLOB for now. The
-//! same gap is already tracked for Nooto (MEK plaintext storage in SQLite); fixing it here
-//! should probably happen alongside that fix, not as a one-off.
+//! KNOWN GAP: the design doc says private key material should be encrypted at rest via the OS
+//! keychain. This stores it as a plain BLOB for now. The same gap is already tracked for Nooto
+//! (MEK plaintext storage in SQLite); fixing it here should probably happen alongside that fix,
+//! not as a one-off.
 
 use rusqlite::Connection;
 
@@ -18,12 +16,14 @@ pub fn open_and_migrate(path: &std::path::Path) -> rusqlite::Result<Connection> 
             id INTEGER PRIMARY KEY CHECK (id = 1),
             ml_dsa_priv BLOB NOT NULL,
             kem_decap_priv BLOB NOT NULL,
-            x25519_priv BLOB NOT NULL
+            x25519_priv BLOB NOT NULL,
+            relay_user_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS contacts (
             id TEXT PRIMARY KEY,
             nickname TEXT NOT NULL,
+            user_id TEXT,
             ml_dsa_pub BLOB NOT NULL,
             kem_pub BLOB NOT NULL,
             x25519_pub BLOB NOT NULL,
@@ -47,5 +47,11 @@ pub fn open_and_migrate(path: &std::path::Path) -> rusqlite::Result<Connection> 
         );
         ",
     )?;
+
+    // Migrations for databases created before these columns existed.
+    // Errors (e.g. column already exists) are ignored — these are idempotent.
+    let _ = conn.execute("ALTER TABLE identity ADD COLUMN relay_user_id TEXT", []);
+    let _ = conn.execute("ALTER TABLE contacts ADD COLUMN user_id TEXT", []);
+
     Ok(conn)
 }

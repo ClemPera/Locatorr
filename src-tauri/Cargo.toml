@@ -26,6 +26,8 @@ locatorr-crypto = { path = "../crypto-core" }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 base64 = "0.22.1"
 rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
