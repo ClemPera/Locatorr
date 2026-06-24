@@ -40,12 +40,16 @@
       {@render children()}
     </div>
   </main>
+  <footer class="safe-bottom"></footer>
 </div>
 
 <style>
   .shell {
     display: flex;
-    min-height: 100vh;
+    width: 100vw;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    overscroll-behavior: none;
   }
 
   .rail {
@@ -137,6 +141,7 @@
     justify-content: center;
     padding: var(--space-6) var(--space-8);
     overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .content-inner {
@@ -144,10 +149,18 @@
     max-width: 60rem;
   }
 
+  .safe-bottom {
+    flex-shrink: 0;
+    height: (env(safe-area-inset-bottom, 0px) + 90px);
+    min-height: 90px;
+    /* background: var(--ink); */
+  }
+
   @media (max-width: 720px) {
     .shell {
       flex-direction: column;
       min-height: 100dvh;
+      max-height: 100dvh;
     }
 
     .rail {
