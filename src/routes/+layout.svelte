@@ -136,6 +136,7 @@
     display: flex;
     justify-content: center;
     padding: var(--space-6) var(--space-8);
+    overflow-y: auto;
   }
 
   .content-inner {

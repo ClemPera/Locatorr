@@ -55,12 +55,13 @@ html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
   background: var(--ink);
   color: var(--fg);
   font-family: var(--font-ui);
   font-size: var(--text-md);
   line-height: 1.45;
-  overflow: hidden; /* TODO: This will cause issue for other devices */
   -webkit-font-smoothing: antialiased;
 }
 
