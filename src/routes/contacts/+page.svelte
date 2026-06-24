@@ -97,6 +97,17 @@
               <span class="badge">key changed</span>
             {/if}
           </div>
+          <div class="toggle" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.key === 'Enter' && e.stopPropagation()} role="presentation">
+            <label>
+              <input
+                type="checkbox"
+                checked={contact.sharing}
+                disabled={busyId === contact.id}
+                onchange={() => toggleSharing(contact.id, contact.sharing)}
+              />
+              <span>Share</span>
+            </label>
+          </div>
           <span class="chevron">{expandedId === contact.id ? "−" : "+"}</span>
         </button>
 
@@ -127,15 +138,6 @@
             <hr class="divider" />
 
             <div class="actions">
-              <label class="toggle">
-                <input
-                  type="checkbox"
-                  checked={contact.sharing}
-                  disabled={busyId === contact.id}
-                  onchange={() => toggleSharing(contact.id, contact.sharing)}
-                />
-                Share my location with {contact.nickname}
-              </label>
               <button class="danger" disabled={busyId === contact.id} onclick={() => deleteContact(contact.id)}>
                 Remove contact
               </button>
