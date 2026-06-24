@@ -27,13 +27,18 @@
     event.preventDefault();
     const url = serverUrl.trim();
 
-    // Basic validation
     if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
       relayStatus = "URL must start with http:// or https://";
       return;
     }
 
-    await updateSettings({ server_url: url, poll_interval_secs: pollIntervalSecs });
+    try {
+      await updateSettings({ server_url: url, poll_interval_secs: pollIntervalSecs });
+    } catch (err) {
+      relayStatus = `Failed to save: ${err}`;
+      return;
+    }
+
     saved = true;
     relayStatus = "";
     setTimeout(() => (saved = false), 2000);
