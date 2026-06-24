@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS relay (
 	wrap_nonce     BYTEA NOT NULL,
 	updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (from_user, to_user)
+);
 CREATE TABLE IF NOT EXISTS pairing_requests (
 	id         TEXT PRIMARY KEY,
 	from_user  TEXT NOT NULL REFERENCES accounts(user_id),
