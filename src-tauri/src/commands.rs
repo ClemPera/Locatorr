@@ -43,6 +43,7 @@ pub struct ContactDto {
 pub struct SettingsDto {
     pub server_url: String,
     pub poll_interval_secs: i64,
+    #[serde(default)]
     pub relay_user_id: String,
 }
 
