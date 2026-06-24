@@ -12,6 +12,9 @@
     const settings = await getSettings();
     serverUrl = settings.server_url;
     pollIntervalSecs = settings.poll_interval_secs;
+    if (settings.relay_user_id) {
+      relayStatus = `Your account ID: ${settings.relay_user_id}`;
+    }
     loading = false;
   });
 

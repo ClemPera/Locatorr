@@ -95,7 +95,11 @@
 <div class="grid">
   <section class="panel">
     <h2>Your pairing code</h2>
-    <p>Show this QR to someone in person, or copy the link below to send remotely. They'll scan it and your keys will be fetched securely from the relay.</p>
+    {#if myPayload.includes("local=1")}
+      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a> and save a relay URL first — then your QR will link directly to your account.</p>
+    {:else}
+      <p>Show this QR to someone in person, or copy the link below to send remotely.</p>
+    {/if}
     <div class="qr-wrap">
       {#if myPayload}
         <PairingQr value={myPayload} />

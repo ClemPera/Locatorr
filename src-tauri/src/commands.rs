@@ -161,22 +161,16 @@ fn load_or_create_identity(conn: &Connection, app: &tauri::AppHandle) -> Result<
     Ok(identity)
 }
 
-fn encode_pairing_payload(bundle: &PublicBundle, relay_user_id: &str) -> String {
-    // Signal-style: if registered, produce a short link. The scanning side
-    // fetches the full key bundle from the relay via GET /v1/accounts/{uid}.
-    // Fingerprint comparison out-of-band still catches any MITM.
+fn encode_pairing_payload(_bundle: &PublicBundle, relay_user_id: &str) -> String {
+    // Always produce a short link. If registered, use the relay user_id.
+    // If not registered, use a local-only marker — the full key payload
+    // is still in the textarea below the QR for copy/paste.
     if !relay_user_id.is_empty() {
         return format!("locatorr://pair?uid={}", relay_user_id);
     }
-    // Fallback for users not yet registered with a relay
-    let payload = PairingPayload {
-        ml_dsa_pub: B64.encode(&bundle.ml_dsa_pub),
-        kem_pub: B64.encode(&bundle.kem_pub),
-        x25519_pub: B64.encode(bundle.x25519_pub),
-        relay_user_id: String::new(),
-    };
-    let json = serde_json::to_vec(&payload).expect("PairingPayload always serializes");
-    B64.encode(json)
+    // Not registered: generate a compact local identifier.
+    // The recipient must use the text-based payload below the QR.
+    format!("locatorr://pair?local=1")
 }
 
 fn decode_pairing_payload(payload: &str) -> Result<(PublicBundle, String), String> {
