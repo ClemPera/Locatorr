@@ -15,27 +15,36 @@
     serverUrl = settings.server_url;
     pollIntervalSecs = settings.poll_interval_secs;
     if (settings.relay_user_id) {
-      relayStatus = `Account: ${settings.relay_user_id}`;
-      myUsername = settings.username || "";
+      relayStatus = `Connected — account: ${settings.relay_user_id}`;
+    } else if (settings.server_url) {
+      relayStatus = "Not registered — click Save to connect";
     }
+    myUsername = settings.username || "";
     loading = false;
   });
 
   async function save(event: Event) {
     event.preventDefault();
-    await updateSettings({ server_url: serverUrl, poll_interval_secs: pollIntervalSecs });
-    saved = true;
-    setTimeout(() => (saved = false), 1500);
+    const url = serverUrl.trim();
 
-    if (serverUrl.trim()) {
-      relayStatus = "Registering…";
+    // Basic validation
+    if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
+      relayStatus = "URL must start with http:// or https://";
+      return;
+    }
+
+    await updateSettings({ server_url: url, poll_interval_secs: pollIntervalSecs });
+    saved = true;
+    relayStatus = "";
+    setTimeout(() => (saved = false), 2000);
+
+    if (url) {
+      relayStatus = "Registering with relay…";
       try {
-        const uid = await registerWithRelay(serverUrl);
-        relayStatus = "Authenticating…";
-        await authenticateWithRelay(serverUrl);
-        relayStatus = `Account: ${uid}`;
+        const uid = await registerWithRelay(url);
+        relayStatus = `Connected ✓ — your account: ${uid}`;
       } catch (err) {
-        relayStatus = `Relay error: ${err}`;
+        relayStatus = `Could not reach relay at ${url}: ${err}`;
       }
     }
   }
@@ -87,7 +96,7 @@
     {/if}
   </form>
 
-  {#if relayStatus.startsWith("Account:")}
+  {#if relayStatus.startsWith("Connected")}
     <section class="panel" style="margin-top: var(--space-5)">
       <h2>Your identity</h2>
       <label class="field">
