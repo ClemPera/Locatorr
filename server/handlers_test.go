@@ -40,11 +40,12 @@ func doJSON(t *testing.T, mux http.Handler, method, path string, body any, heade
 	return rec, parsed
 }
 
-func registerAccount(t *testing.T, mux http.Handler, mlDsaPub, kemPub string) string {
+func registerAccount(t *testing.T, mux http.Handler, mlDsaPub, kemPub, x25519Pub string) string {
 	t.Helper()
 	rec, body := doJSON(t, mux, "POST", "/v1/accounts", map[string]string{
-		"ml_dsa_pub": mlDsaPub,
-		"kem_pub":    kemPub,
+		"ml_dsa_pub":  mlDsaPub,
+		"kem_pub":     kemPub,
+		"x25519_pub":  x25519Pub,
 	}, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: expected 201, got %d (%v)", rec.Code, body)
@@ -69,7 +70,7 @@ func TestRegisterAndFetchAccount(t *testing.T) {
 	s := newTestServer()
 	mux := s.routes()
 
-	userID := registerAccount(t, mux, "QQ==", "QQ==")
+	userID := registerAccount(t, mux, "QQ==", "QQ==", "Iw==")
 
 	rec, body := doJSON(t, mux, "GET", "/v1/accounts/"+userID, nil, nil)
 	if rec.Code != http.StatusOK {
@@ -83,7 +84,7 @@ func TestRegisterAndFetchAccount(t *testing.T) {
 func TestAuthChallengeVerifyAndRejectBadSignature(t *testing.T) {
 	s := newTestServer()
 	mux := s.routes()
-	userID := registerAccount(t, mux, "QQ==", "QQ==")
+	userID := registerAccount(t, mux, "QQ==", "QQ==", "Iw==")
 
 	token := login(t, mux, userID)
 	if token == "" {
@@ -94,7 +95,7 @@ func TestAuthChallengeVerifyAndRejectBadSignature(t *testing.T) {
 	s2 := newTestServer()
 	s2.verifySig = func(_, _, _ []byte) bool { return false }
 	mux2 := s2.routes()
-	userID2 := registerAccount(t, mux2, "QQ==", "QQ==")
+	userID2 := registerAccount(t, mux2, "QQ==", "QQ==", "Iw==")
 	doJSON(t, mux2, "POST", "/v1/auth/challenge", map[string]string{"user_id": userID2}, nil)
 	rec, _ := doJSON(t, mux2, "POST", "/v1/auth/verify", map[string]string{
 		"user_id":   userID2,
@@ -109,8 +110,8 @@ func TestLocationRelayPutInboxDelete(t *testing.T) {
 	s := newTestServer()
 	mux := s.routes()
 
-	aID := registerAccount(t, mux, "QQ==", "QQ==")
-	bID := registerAccount(t, mux, "Qg==", "Qg==")
+	aID := registerAccount(t, mux, "QQ==", "QQ==", "Iw==")
+	bID := registerAccount(t, mux, "Qg==", "Qg==", "Iw==")
 	aToken := login(t, mux, aID)
 	bToken := login(t, mux, bID)
 
@@ -181,7 +182,7 @@ func TestExpiredTokenIsRejected(t *testing.T) {
 	s := newTestServer()
 	s.tokens = NewTokenIssuer([]byte("test-secret"), -1*time.Minute) // already expired
 	mux := s.routes()
-	userID := registerAccount(t, mux, "QQ==", "QQ==")
+	userID := registerAccount(t, mux, "QQ==", "QQ==", "Iw==")
 	token := login(t, mux, userID)
 
 	rec, _ := doJSON(t, mux, "GET", "/v1/locations/inbox", nil, map[string]string{"Authorization": "Bearer " + token})

@@ -21,6 +21,7 @@ fn client() -> Client {
 struct RegisterRequest {
     ml_dsa_pub: String,
     kem_pub: String,
+    x25519_pub: String,
 }
 
 #[derive(Deserialize)]
@@ -89,12 +90,14 @@ pub async fn register(
     server_url: &str,
     ml_dsa_pub: &[u8],
     kem_pub: &[u8],
+    x25519_pub: &[u8],
 ) -> Result<String, String> {
     let resp = client()
         .post(format!("{}/v1/accounts", server_url.trim_end_matches('/')))
         .json(&RegisterRequest {
             ml_dsa_pub: B64.encode(ml_dsa_pub),
             kem_pub: B64.encode(kem_pub),
+            x25519_pub: B64.encode(x25519_pub),
         })
         .send()
         .await

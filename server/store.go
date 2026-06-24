@@ -13,6 +13,7 @@ type Account struct {
 	UserID    string
 	MlDsaPub  []byte
 	KemPub    []byte
+	X25519Pub []byte // 32-byte X25519 public key for hybrid key agreement
 	CreatedAt time.Time
 }
 
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 	user_id    TEXT PRIMARY KEY,
 	ml_dsa_pub BYTEA NOT NULL,
 	kem_pub    BYTEA NOT NULL,
+	x25519_pub BYTEA NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS challenges (
@@ -123,10 +125,10 @@ func (s *Store) PutAccount(a Account) {
 	s.accounts[a.UserID] = a
 	if s.pool != nil {
 		_, _ = s.pool.Exec(context.Background(),
-			`INSERT INTO accounts (user_id, ml_dsa_pub, kem_pub, created_at)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (user_id) DO UPDATE SET ml_dsa_pub = $2, kem_pub = $3`,
-			a.UserID, a.MlDsaPub, a.KemPub, a.CreatedAt,
+			`INSERT INTO accounts (user_id, ml_dsa_pub, kem_pub, x25519_pub, created_at)
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (user_id) DO UPDATE SET ml_dsa_pub = $2, kem_pub = $3, x25519_pub = $4`,
+			a.UserID, a.MlDsaPub, a.KemPub, a.X25519Pub, a.CreatedAt,
 		)
 	}
 }
@@ -209,14 +211,14 @@ func (s *Store) loadAll(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.pool.Query(ctx, "SELECT user_id, ml_dsa_pub, kem_pub, created_at FROM accounts")
+	rows, err := s.pool.Query(ctx, "SELECT user_id, ml_dsa_pub, kem_pub, x25519_pub, created_at FROM accounts")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var a Account
-		if err := rows.Scan(&a.UserID, &a.MlDsaPub, &a.KemPub, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.UserID, &a.MlDsaPub, &a.KemPub, &a.X25519Pub, &a.CreatedAt); err != nil {
 			return err
 		}
 		s.accounts[a.UserID] = a

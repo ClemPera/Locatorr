@@ -162,20 +162,47 @@ fn load_or_create_identity(conn: &Connection, app: &tauri::AppHandle) -> Result<
 }
 
 fn encode_pairing_payload(bundle: &PublicBundle, relay_user_id: &str) -> String {
+    // Signal-style: if registered, produce a short link. The scanning side
+    // fetches the full key bundle from the relay via GET /v1/accounts/{uid}.
+    // Fingerprint comparison out-of-band still catches any MITM.
+    if !relay_user_id.is_empty() {
+        return format!("locatorr://pair?uid={}", relay_user_id);
+    }
+    // Fallback for users not yet registered with a relay
     let payload = PairingPayload {
         ml_dsa_pub: B64.encode(&bundle.ml_dsa_pub),
         kem_pub: B64.encode(&bundle.kem_pub),
         x25519_pub: B64.encode(bundle.x25519_pub),
-        relay_user_id: relay_user_id.to_string(),
+        relay_user_id: String::new(),
     };
     let json = serde_json::to_vec(&payload).expect("PairingPayload always serializes");
     B64.encode(json)
 }
 
 fn decode_pairing_payload(payload: &str) -> Result<(PublicBundle, String), String> {
+    let trimmed = payload.trim();
+
+    // Link format: locatorr://pair?uid=<user_id>
+    if let Some(uid) = trimmed.strip_prefix("locatorr://pair?uid=") {
+        if uid.is_empty() {
+            return Err("pairing link has empty user_id".to_string());
+        }
+        // Caller must fetch the full key bundle from the relay using this uid.
+        // Signal the uid via a special empty bundle so add_contact knows to fetch.
+        return Ok((
+            PublicBundle {
+                ml_dsa_pub: vec![],
+                kem_pub: vec![],
+                x25519_pub: [0u8; 32],
+            },
+            uid.to_string(),
+        ));
+    }
+
+    // Old base64-encoded JSON format (backward compat, offline use)
     let json = B64
-        .decode(payload.trim())
-        .map_err(|_| "pairing payload is not valid base64".to_string())?;
+        .decode(trimmed)
+        .map_err(|_| "pairing payload is not a valid link or base64".to_string())?;
     let parsed: PairingPayload = serde_json::from_slice(&json)
         .map_err(|_| "pairing payload is not valid JSON".to_string())?;
 
@@ -236,15 +263,71 @@ pub fn get_pairing_payload(
 }
 
 #[tauri::command]
-pub fn add_contact(
-    state: tauri::State<AppState>,
+pub async fn add_contact(
+    state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
     payload: String,
     nickname: String,
 ) -> Result<ContactDto, String> {
+    let server_url: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'server_url'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+
+    // Phase 1: decode payload (need identity for old-format fingerprint later, but we
+    // only need the bundle for the link vs old-format decision — and the relay URL).
+    let (their_bundle, their_relay_user_id) = decode_pairing_payload(&payload)?;
+
+    // Link format: fetch keys from relay (async, no lock held)
+    let their_bundle = if their_bundle.ml_dsa_pub.is_empty() && !their_relay_user_id.is_empty() {
+        if server_url.is_empty() {
+            return Err("Received a pairing link but no relay server is configured. Set the relay URL in Settings first.".to_string());
+        }
+        let resp = reqwest::get(format!(
+            "{}/v1/accounts/{}",
+            server_url.trim_end_matches('/'),
+            their_relay_user_id
+        ))
+        .await
+        .map_err(|e| format!("failed to fetch contact keys from relay: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("relay returned {} for account {}", resp.status(), their_relay_user_id));
+        }
+        #[derive(Deserialize)]
+        struct AccountResponse {
+            ml_dsa_pub: String,
+            kem_pub: String,
+            x25519_pub: String,
+        }
+        let account: AccountResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("bad response from relay: {}", e))?;
+
+        PublicBundle {
+            ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+                .map_err(|_| "relay returned invalid ml_dsa_pub base64".to_string())?,
+            kem_pub: B64.decode(account.kem_pub)
+                .map_err(|_| "relay returned invalid kem_pub base64".to_string())?,
+            x25519_pub: B64.decode(account.x25519_pub)
+                .map_err(|_| "relay returned invalid x25519_pub base64".to_string())?
+                .try_into()
+                .map_err(|_| "relay returned x25519_pub not 32 bytes".to_string())?,
+        }
+    } else {
+        their_bundle
+    };
+
+    // Phase 2: lock DB, compute fingerprint, store contact
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let my_identity = load_or_create_identity(&conn, &app)?;
-    let (their_bundle, their_relay_user_id) = decode_pairing_payload(&payload)?;
 
     let fingerprint = pairing::fingerprint(&my_identity.public_bundle(), &their_bundle);
     let id = random_id();
@@ -482,7 +565,7 @@ pub async fn register_with_relay(
     // Lock is dropped here — safe to await
 
     let bundle = identity.public_bundle();
-    let user_id = relay::register(&server_url, &bundle.ml_dsa_pub, &bundle.kem_pub).await?;
+    let user_id = relay::register(&server_url, &bundle.ml_dsa_pub, &bundle.kem_pub, &bundle.x25519_pub).await?;
 
     // Persist the user_id
     {

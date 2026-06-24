@@ -40,8 +40,9 @@ func b64encode(b []byte) string {
 // { "ml_dsa_pub": "<b64>", "kem_pub": "<b64>" } -> { "user_id": "..." }
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		MlDsaPub string `json:"ml_dsa_pub"`
-		KemPub   string `json:"kem_pub"`
+		MlDsaPub  string `json:"ml_dsa_pub"`
+		KemPub    string `json:"kem_pub"`
+		X25519Pub string `json:"x25519_pub"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -49,8 +50,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	mlDsaPub, err1 := b64decode(req.MlDsaPub)
 	kemPub, err2 := b64decode(req.KemPub)
-	if err1 != nil || err2 != nil || len(mlDsaPub) == 0 || len(kemPub) == 0 {
-		writeErr(w, http.StatusBadRequest, "ml_dsa_pub and kem_pub are required, base64-encoded")
+	x25519Pub, err3 := b64decode(req.X25519Pub)
+	if err1 != nil || err2 != nil || err3 != nil || len(mlDsaPub) == 0 || len(kemPub) == 0 {
+		writeErr(w, http.StatusBadRequest, "ml_dsa_pub, kem_pub, and x25519_pub are required, base64-encoded")
 		return
 	}
 
@@ -59,6 +61,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		UserID:    userID,
 		MlDsaPub:  mlDsaPub,
 		KemPub:    kemPub,
+		X25519Pub: x25519Pub,
 		CreatedAt: time.Now(),
 	})
 
@@ -74,9 +77,10 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"user_id":    acc.UserID,
-		"ml_dsa_pub": b64encode(acc.MlDsaPub),
-		"kem_pub":    b64encode(acc.KemPub),
+		"user_id":     acc.UserID,
+		"ml_dsa_pub":  b64encode(acc.MlDsaPub),
+		"kem_pub":     b64encode(acc.KemPub),
+		"x25519_pub":  b64encode(acc.X25519Pub),
 	})
 }
 
