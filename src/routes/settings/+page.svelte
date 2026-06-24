@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getSettings, updateSettings } from "$lib/api";
+  import { getSettings, updateSettings, registerWithRelay, authenticateWithRelay } from "$lib/api";
 
   let serverUrl = $state("");
   let pollIntervalSecs = $state(30);
   let saved = $state(false);
   let loading = $state(true);
+  let relayStatus = $state("");
 
   onMount(async () => {
     const settings = await getSettings();
@@ -19,6 +20,19 @@
     await updateSettings({ server_url: serverUrl, poll_interval_secs: pollIntervalSecs });
     saved = true;
     setTimeout(() => (saved = false), 1500);
+
+    // Register with relay and authenticate
+    if (serverUrl.trim()) {
+      relayStatus = "Registering with relay…";
+      try {
+        await registerWithRelay(serverUrl);
+        relayStatus = "Authenticating…";
+        await authenticateWithRelay(serverUrl);
+        relayStatus = "Connected ✓";
+      } catch (err) {
+        relayStatus = `Relay error: ${err}`;
+      }
+    }
   }
 </script>
 
@@ -35,8 +49,8 @@
       <span class="eyebrow">relay server url</span>
       <input bind:value={serverUrl} placeholder="https://relay.example.com" />
       <span class="help">
-        Not wired up to any network calls yet in this build — sharing and polling land in the
-        next pass. Saved here so the setting exists when they do.
+        The relay server that stores and forwards encrypted location shares. The app registers
+        and authenticates with this server when you save settings.
       </span>
     </label>
 
@@ -52,6 +66,9 @@
     </label>
 
     <button class="primary" type="submit">{saved ? "Saved" : "Save"}</button>
+    {#if relayStatus}
+      <p class="relay-status">{relayStatus}</p>
+    {/if}
   </form>
 {/if}
 
@@ -72,5 +89,11 @@
     color: var(--fg-faint);
     font-size: var(--text-sm);
     max-width: 32rem;
+  }
+
+  .relay-status {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    margin-top: var(--space-3);
   }
 </style>

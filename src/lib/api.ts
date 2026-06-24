@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 export interface Contact {
   id: string;
   nickname: string;
+  relay_user_id: string;
   fingerprint: string;
   verified: boolean;
   sharing: boolean;
@@ -12,6 +13,7 @@ export interface Contact {
 export interface Settings {
   server_url: string;
   poll_interval_secs: number;
+  relay_user_id?: string;
 }
 
 export interface ReceivedLocation {
@@ -61,4 +63,27 @@ export function updateSettings(settings: Settings): Promise<void> {
 
 export function listReceivedLocations(): Promise<ReceivedLocation[]> {
   return invoke<ReceivedLocation[]>("list_received_locations");
+}
+
+// ── relay integration ────────────────────────────────────────────────────
+
+export function registerWithRelay(serverUrl: string): Promise<string> {
+  return invoke<string>("register_with_relay", { serverUrl });
+}
+
+export function authenticateWithRelay(serverUrl: string): Promise<string> {
+  return invoke<string>("authenticate_with_relay", { serverUrl });
+}
+
+export function sendLocationUpdate(
+  serverUrl: string,
+  lat: number,
+  lon: number,
+  accuracy: number,
+): Promise<void> {
+  return invoke<void>("send_location_update", { serverUrl, lat, lon, accuracy });
+}
+
+export function pollInboxForLocations(serverUrl: string): Promise<ReceivedLocation[]> {
+  return invoke<ReceivedLocation[]>("poll_inbox_for_locations", { serverUrl });
 }
