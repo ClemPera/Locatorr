@@ -505,9 +505,7 @@ pub async fn send_location_update(
             .ok_or("not authenticated: call authenticate_with_relay first".to_string())?;
 
         let mut stmt = conn
-            .prepare(
-                "SELECT user_id, x25519_pub, kem_pub FROM contacts WHERE sharing = 1",
-            )
+            .prepare("SELECT user_id, x25519_pub, kem_pub FROM contacts WHERE sharing = 1")
             .map_err(|e| e.to_string())?;
         let contacts: Vec<(String, Vec<u8>, Vec<u8>)> = stmt
             .query_map([], |row| {

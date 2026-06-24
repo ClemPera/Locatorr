@@ -85,7 +85,11 @@ pub struct RawShare {
 // --- API calls ---
 
 /// Register this device with the relay. Returns the server-assigned user_id.
-pub async fn register(server_url: &str, ml_dsa_pub: &[u8], kem_pub: &[u8]) -> Result<String, String> {
+pub async fn register(
+    server_url: &str,
+    ml_dsa_pub: &[u8],
+    kem_pub: &[u8],
+) -> Result<String, String> {
     let resp = client()
         .post(format!("{}/v1/accounts", server_url.trim_end_matches('/')))
         .json(&RegisterRequest {
