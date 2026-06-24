@@ -72,7 +72,7 @@
 <div class="grid">
   <section class="panel">
     <h2>Your pairing code</h2>
-    <p>Share this with someone in person (QR) or send the text another way.</p>
+    <p>Share the code below with the person you want to pair with. The QR is a visual identifier — copy and send the full text.</p>
     <div class="qr-wrap">
       {#if myPayload}
         <PairingQr value={myPayload} />
