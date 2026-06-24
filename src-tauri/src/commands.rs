@@ -415,11 +415,14 @@ pub async fn preview_pairing(
             .map_err(|e| format!("bad response: {}", e))?;
 
         PublicBundle {
-            ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+            ml_dsa_pub: B64
+                .decode(account.ml_dsa_pub)
                 .map_err(|_| "invalid ml_dsa_pub".to_string())?,
-            kem_pub: B64.decode(account.kem_pub)
+            kem_pub: B64
+                .decode(account.kem_pub)
                 .map_err(|_| "invalid kem_pub".to_string())?,
-            x25519_pub: B64.decode(account.x25519_pub)
+            x25519_pub: B64
+                .decode(account.x25519_pub)
                 .map_err(|_| "invalid x25519_pub".to_string())?
                 .try_into()
                 .map_err(|_| "x25519_pub wrong size".to_string())?,
