@@ -1,10 +1,6 @@
-//! Local SQLite schema. One table per design concern: identity key material, paired contacts,
-//! key-value settings, and received location shares populated by the relay HTTP client.
-//!
-//! KNOWN GAP: the design doc says private key material should be encrypted at rest via the OS
-//! keychain. This stores it as a plain BLOB for now. The same gap is already tracked for Nooto
-//! (MEK plaintext storage in SQLite); fixing it here should probably happen alongside that fix,
-//! not as a one-off.
+//! Local SQLite schema. One table per design concern: identity key material (legacy fallback —
+//! primary identity storage is now in `tauri-plugin-store`), paired contacts, key-value settings,
+//! and received location shares populated by the relay HTTP client.
 
 use rusqlite::Connection;
 

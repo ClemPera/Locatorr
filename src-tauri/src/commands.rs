@@ -10,6 +10,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tauri_plugin_store::StoreExt;
 
 use crate::relay;
 use locatorr_crypto::envelope;
@@ -71,7 +73,43 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-fn load_or_create_identity(conn: &Connection) -> Result<Identity, String> {
+const IDENTITY_STORE: &str = "identity.json";
+const KEY_ML_DSA_PRIV: &str = "ml_dsa_priv";
+const KEY_KEM_DECAP_PRIV: &str = "kem_decap_priv";
+const KEY_X25519_PRIV: &str = "x25519_priv";
+
+fn load_or_create_identity(conn: &Connection, app: &tauri::AppHandle) -> Result<Identity, String> {
+    // Try the plugin store first
+    if let Ok(store) = app.store(IDENTITY_STORE) {
+        let ml_dsa_priv = store
+            .get(KEY_ML_DSA_PRIV)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .and_then(|s| B64.decode(s).ok());
+        let kem_decap_priv = store
+            .get(KEY_KEM_DECAP_PRIV)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .and_then(|s| B64.decode(s).ok());
+        let x25519_priv = store
+            .get(KEY_X25519_PRIV)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .and_then(|s| B64.decode(s).ok());
+
+        if let (Some(ml_dsa_priv), Some(kem_decap_priv), Some(x25519_priv)) =
+            (ml_dsa_priv, kem_decap_priv, x25519_priv)
+        {
+            let x25519_priv: [u8; 32] = x25519_priv
+                .try_into()
+                .map_err(|_| "stored x25519_priv is not 32 bytes".to_string())?;
+            return Identity::from_bytes(&IdentityBytes {
+                ml_dsa_priv,
+                kem_decap_priv,
+                x25519_priv,
+            })
+            .map_err(|e| e.to_string());
+        }
+    }
+
+    // Fallback: load from SQLite (migration path)
     let existing: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = conn
         .query_row(
             "SELECT ml_dsa_priv, kem_decap_priv, x25519_priv FROM identity WHERE id = 1",
@@ -85,21 +123,41 @@ fn load_or_create_identity(conn: &Connection) -> Result<Identity, String> {
         let x25519_priv: [u8; 32] = x25519_priv_vec
             .try_into()
             .map_err(|_| "stored x25519_priv is not 32 bytes".to_string())?;
-        return Identity::from_bytes(&IdentityBytes {
+        let identity = Identity::from_bytes(&IdentityBytes {
             ml_dsa_priv,
             kem_decap_priv,
             x25519_priv,
         })
-        .map_err(|e| e.to_string());
+        .map_err(|e| e.to_string())?;
+
+        // Migrate to plugin store
+        let bytes = identity.to_bytes();
+        if let Ok(store) = app.store(IDENTITY_STORE) {
+            store.set(KEY_ML_DSA_PRIV, json!(B64.encode(&bytes.ml_dsa_priv)));
+            store.set(KEY_KEM_DECAP_PRIV, json!(B64.encode(&bytes.kem_decap_priv)));
+            store.set(KEY_X25519_PRIV, json!(B64.encode(bytes.x25519_priv)));
+            let _ = store.save();
+        }
+        return Ok(identity);
     }
 
+    // Generate new identity and persist to plugin store
     let identity = Identity::generate();
     let bytes = identity.to_bytes();
+
+    let store = app.store(IDENTITY_STORE).map_err(|e| e.to_string())?;
+    store.set(KEY_ML_DSA_PRIV, json!(B64.encode(&bytes.ml_dsa_priv)));
+    store.set(KEY_KEM_DECAP_PRIV, json!(B64.encode(&bytes.kem_decap_priv)));
+    store.set(KEY_X25519_PRIV, json!(B64.encode(bytes.x25519_priv)));
+    store.save().map_err(|e| e.to_string())?;
+
+    // Also store in SQLite for backward compat
     conn.execute(
-        "INSERT INTO identity (id, ml_dsa_priv, kem_decap_priv, x25519_priv) VALUES (1, ?1, ?2, ?3)",
+        "INSERT OR REPLACE INTO identity (id, ml_dsa_priv, kem_decap_priv, x25519_priv) VALUES (1, ?1, ?2, ?3)",
         params![bytes.ml_dsa_priv, bytes.kem_decap_priv, bytes.x25519_priv.to_vec()],
     )
     .map_err(|e| e.to_string())?;
+
     Ok(identity)
 }
 
@@ -157,9 +215,12 @@ fn random_id() -> String {
 // ── existing commands, updated for new columns ──────────────────────────
 
 #[tauri::command]
-pub fn get_pairing_payload(state: tauri::State<AppState>) -> Result<PublicBundleDto, String> {
+pub fn get_pairing_payload(
+    state: tauri::State<AppState>,
+    app: tauri::AppHandle,
+) -> Result<PublicBundleDto, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let identity = load_or_create_identity(&conn)?;
+    let identity = load_or_create_identity(&conn, &app)?;
     let relay_user_id: String = conn
         .query_row(
             "SELECT value FROM settings WHERE key = 'relay_user_id'",
@@ -177,11 +238,12 @@ pub fn get_pairing_payload(state: tauri::State<AppState>) -> Result<PublicBundle
 #[tauri::command]
 pub fn add_contact(
     state: tauri::State<AppState>,
+    app: tauri::AppHandle,
     payload: String,
     nickname: String,
 ) -> Result<ContactDto, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let my_identity = load_or_create_identity(&conn)?;
+    let my_identity = load_or_create_identity(&conn, &app)?;
     let (their_bundle, their_relay_user_id) = decode_pairing_payload(&payload)?;
 
     let fingerprint = pairing::fingerprint(&my_identity.public_bundle(), &their_bundle);
@@ -321,10 +383,11 @@ pub fn update_settings(state: tauri::State<AppState>, settings: SettingsDto) -> 
 #[tauri::command]
 pub fn check_contact_fingerprint(
     state: tauri::State<AppState>,
+    app: tauri::AppHandle,
     contact_id: String,
 ) -> Result<bool, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let my_identity = load_or_create_identity(&conn)?;
+    let my_identity = load_or_create_identity(&conn, &app)?;
 
     let (_user_id, ml_dsa_pub, kem_pub, x25519_pub_vec, stored_fingerprint): (
         String,
@@ -392,11 +455,12 @@ pub fn list_received_locations(state: tauri::State<AppState>) -> Result<Vec<Loca
 #[tauri::command]
 pub async fn register_with_relay(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     server_url: String,
 ) -> Result<String, String> {
     let identity = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        let identity = load_or_create_identity(&conn)?;
+        let identity = load_or_create_identity(&conn, &app)?;
 
         // Check if already registered
         let existing: Option<String> = conn
@@ -446,11 +510,12 @@ pub async fn register_with_relay(
 #[tauri::command]
 pub async fn authenticate_with_relay(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     server_url: String,
 ) -> Result<String, String> {
     let (identity, user_id) = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        let identity = load_or_create_identity(&conn)?;
+        let identity = load_or_create_identity(&conn, &app)?;
         let user_id: String = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'relay_user_id'",
@@ -485,6 +550,7 @@ pub async fn authenticate_with_relay(
 #[tauri::command]
 pub async fn send_location_update(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     server_url: String,
     lat: f64,
     lon: f64,
@@ -492,7 +558,7 @@ pub async fn send_location_update(
 ) -> Result<(), String> {
     let (identity, token, sharing_contacts) = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        let identity = load_or_create_identity(&conn)?;
+        let identity = load_or_create_identity(&conn, &app)?;
 
         let token: String = conn
             .query_row(
@@ -555,11 +621,12 @@ pub async fn send_location_update(
 #[tauri::command]
 pub async fn poll_inbox_for_locations(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     server_url: String,
 ) -> Result<Vec<LocationDto>, String> {
     let (identity, token) = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
-        let identity = load_or_create_identity(&conn)?;
+        let identity = load_or_create_identity(&conn, &app)?;
         let token: String = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'relay_token'",

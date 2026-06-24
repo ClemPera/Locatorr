@@ -4,6 +4,7 @@
   import { refreshContacts } from "$lib/stores";
   import PairingQr from "$lib/components/PairingQr.svelte";
   import FingerprintMeter from "$lib/components/FingerprintMeter.svelte";
+  import { scan } from "@tauri-apps/plugin-barcode-scanner";
 
   let myPayload = $state("");
   let copied = $state(false);
@@ -13,6 +14,7 @@
   let adding = $state(false);
   let addError = $state("");
   let newContact = $state<Contact | null>(null);
+  let scanning = $state(false);
 
   onMount(async () => {
     myPayload = await getPairingPayload();
@@ -46,6 +48,20 @@
     newContact = { ...newContact, verified: true };
     await refreshContacts();
   }
+
+  async function scanQR() {
+    scanning = true;
+    try {
+      const result = await scan({ windowed: false });
+      if (result.content) {
+        theirPayload = result.content;
+      }
+    } catch {
+      // user cancelled or no camera
+    } finally {
+      scanning = false;
+    }
+  }
 </script>
 
 <header class="page-head">
@@ -78,6 +94,9 @@
         <span class="eyebrow">their code</span>
         <textarea class="data" rows="3" bind:value={theirPayload} placeholder="Paste pairing code here"
         ></textarea>
+        <button type="button" onclick={scanQR} disabled={scanning}>
+          {scanning ? "Scanning…" : "Scan QR code"}
+        </button>
       </label>
       {#if addError}
         <p class="error">{addError}</p>

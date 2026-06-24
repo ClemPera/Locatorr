@@ -1,10 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listReceivedLocations, type ReceivedLocation } from "$lib/api";
+  import { listReceivedLocations, sendLocationUpdate, pollInboxForLocations, getSettings, type ReceivedLocation } from "$lib/api";
   import { contacts, refreshContacts } from "$lib/stores";
+  import { getCurrentPosition } from "@tauri-apps/plugin-geolocation";
 
   let locations = $state<ReceivedLocation[]>([]);
   let loading = $state(true);
+  let myLat = $state<number | null>(null);
+  let myLon = $state<number | null>(null);
+  let myAccuracy = $state<number | null>(null);
+  let sharing = $state(false);
 
   async function refresh() {
     loading = true;
@@ -30,11 +35,41 @@
     refresh();
     refreshContacts();
   });
+
+  async function captureAndShare() {
+    try {
+      const pos = await getCurrentPosition();
+      myLat = pos.coords.latitude;
+      myLon = pos.coords.longitude;
+      myAccuracy = pos.coords.accuracy;
+      const settings = await getSettings();
+      if (settings.server_url) {
+        sharing = true;
+        await sendLocationUpdate(settings.server_url, myLat, myLon, myAccuracy);
+        await pollInboxForLocations(settings.server_url);
+        await refresh();
+      }
+    } catch (err) {
+      console.error("location error:", err);
+    } finally {
+      sharing = false;
+    }
+  }
 </script>
 
 <header class="page-head">
   <p class="eyebrow">live</p>
   <h1>Who's sharing with you</h1>
+  <div class="my-location">
+    <button onclick={captureAndShare} disabled={sharing}>
+      {sharing ? "Sharing…" : "Capture & share my location"}
+    </button>
+    {#if myLat !== null}
+      <span class="data">
+        {myLat.toFixed(5)}, {myLon?.toFixed(5)} ±{myAccuracy?.toFixed(0)}m
+      </span>
+    {/if}
+  </div>
 </header>
 
 {#if loading}
@@ -110,5 +145,12 @@
 
   .empty-state p {
     max-width: 32rem;
+  }
+
+  .my-location {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    margin-top: var(--space-3);
   }
 </style>
