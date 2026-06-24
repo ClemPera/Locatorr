@@ -367,6 +367,83 @@ pub async fn add_contact(
     })
 }
 
+/// Decode a pairing payload without storing anything. Returns the fingerprint
+/// so the frontend can show a confirmation dialog before actually adding the contact.
+#[tauri::command]
+pub async fn preview_pairing(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    payload: String,
+) -> Result<PreviewDto, String> {
+    let server_url: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'server_url'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+
+    let (their_bundle, their_relay_user_id) = decode_pairing_payload(&payload)?;
+
+    let their_bundle = if their_bundle.ml_dsa_pub.is_empty() && !their_relay_user_id.is_empty() {
+        if server_url.is_empty() {
+            return Err("Received a pairing link but no relay server is configured. Set the relay URL in Settings first.".to_string());
+        }
+        let resp = reqwest::get(format!(
+            "{}/v1/accounts/{}",
+            server_url.trim_end_matches('/'),
+            their_relay_user_id
+        ))
+        .await
+        .map_err(|e| format!("failed to fetch contact keys: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("relay returned {}", resp.status()));
+        }
+        #[derive(Deserialize)]
+        struct AccountResponse {
+            ml_dsa_pub: String,
+            kem_pub: String,
+            x25519_pub: String,
+        }
+        let account: AccountResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("bad response: {}", e))?;
+
+        PublicBundle {
+            ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+                .map_err(|_| "invalid ml_dsa_pub".to_string())?,
+            kem_pub: B64.decode(account.kem_pub)
+                .map_err(|_| "invalid kem_pub".to_string())?,
+            x25519_pub: B64.decode(account.x25519_pub)
+                .map_err(|_| "invalid x25519_pub".to_string())?
+                .try_into()
+                .map_err(|_| "x25519_pub wrong size".to_string())?,
+        }
+    } else {
+        their_bundle
+    };
+
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let my_identity = load_or_create_identity(&conn, &app)?;
+    let fingerprint = pairing::fingerprint(&my_identity.public_bundle(), &their_bundle);
+
+    Ok(PreviewDto {
+        fingerprint,
+        relay_user_id: their_relay_user_id,
+    })
+}
+
+#[derive(Serialize)]
+pub struct PreviewDto {
+    pub fingerprint: String,
+    pub relay_user_id: String,
+}
+
 #[tauri::command]
 pub fn list_contacts(state: tauri::State<AppState>) -> Result<Vec<ContactDto>, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;

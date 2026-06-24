@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPairingPayload, addContact, verifyContact, type Contact } from "$lib/api";
+  import { getPairingPayload, previewPairing, addContact, verifyContact, type Contact } from "$lib/api";
   import { refreshContacts } from "$lib/stores";
   import PairingQr from "$lib/components/PairingQr.svelte";
   import FingerprintMeter from "$lib/components/FingerprintMeter.svelte";
@@ -15,6 +15,8 @@
   let addError = $state("");
   let newContact = $state<Contact | null>(null);
   let scanning = $state(false);
+  let previewFingerprint = $state("");
+  let previewing = $state(false);
 
   onMount(async () => {
     myPayload = await getPairingPayload();
@@ -29,17 +31,38 @@
   async function submitAddContact(event: Event) {
     event.preventDefault();
     addError = "";
+    previewFingerprint = "";
+    previewing = true;
+    try {
+      const preview = await previewPairing(theirPayload.trim());
+      previewFingerprint = preview.fingerprint;
+    } catch (err) {
+      addError = typeof err === "string" ? err : "Couldn't decode that code.";
+      previewing = false;
+    }
+  }
+
+  async function confirmAddContact() {
+    addError = "";
     adding = true;
     try {
       newContact = await addContact(theirPayload.trim(), nickname.trim() || "Unnamed contact");
       await refreshContacts();
       theirPayload = "";
       nickname = "";
+      previewFingerprint = "";
+      previewing = false;
     } catch (err) {
-      addError = typeof err === "string" ? err : "Couldn't add that contact. Check the payload and try again.";
+      addError = typeof err === "string" ? err : "Couldn't add that contact.";
+      previewing = false;
     } finally {
       adding = false;
     }
+  }
+
+  function cancelPreview() {
+    previewFingerprint = "";
+    previewing = false;
   }
 
   async function markVerified() {
@@ -101,9 +124,26 @@
       {#if addError}
         <p class="error">{addError}</p>
       {/if}
-      <button class="primary" type="submit" disabled={adding || !theirPayload.trim()}>
-        {adding ? "Adding…" : "Add contact"}
-      </button>
+      {#if previewFingerprint}
+        <div class="confirm-box">
+          <p class="eyebrow">verify fingerprint</p>
+          <FingerprintMeter value={previewFingerprint} />
+          <p class="hint">
+            Compare this code with {nickname || "them"} over a separate channel before
+            adding. This confirms nobody tampered with the keys in transit.
+          </p>
+          <div class="confirm-actions">
+            <button class="primary" onclick={confirmAddContact} disabled={adding}>
+              {adding ? "Adding…" : "Confirm — add contact"}
+            </button>
+            <button onclick={cancelPreview}>Cancel</button>
+          </div>
+        </div>
+      {:else}
+        <button class="primary" type="submit" disabled={adding || previewing || !theirPayload.trim()}>
+          {previewing ? "Checking code…" : "Preview"}
+        </button>
+      {/if}
     </form>
   </section>
 </div>

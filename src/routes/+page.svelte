@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listReceivedLocations, sendLocationUpdate, pollInboxForLocations, getSettings, type ReceivedLocation } from "$lib/api";
+  import { listReceivedLocations, sendLocationUpdate, pollInboxForLocations, getSettings, setContactSharing, type ReceivedLocation } from "$lib/api";
   import { contacts, refreshContacts } from "$lib/stores";
   import { getCurrentPosition } from "@tauri-apps/plugin-geolocation";
 
@@ -55,6 +55,11 @@
       sharing = false;
     }
   }
+
+  async function toggleShare(contactId: string, current: boolean) {
+    await setContactSharing(contactId, !current);
+    await refreshContacts();
+  }
 </script>
 
 <header class="page-head">
@@ -74,7 +79,38 @@
 
 {#if loading}
   <p>Reading the log…</p>
-{:else if locations.length === 0}
+{:else}
+  <!-- Who can see you -->
+  <section class="panel sharing-panel">
+    <h2>Who can see you</h2>
+    {#if $contacts.filter(c => c.sharing).length === 0}
+      <p class="muted">No one has access to your location right now. Enable sharing for a contact to let them see where you are.</p>
+    {:else}
+      <ul class="share-list">
+        {#each $contacts.filter(c => c.sharing) as contact}
+          <li>
+            <span class="live-dot"></span>
+            <span>{contact.nickname}</span>
+            <button class="small danger" onclick={() => toggleShare(contact.id, true)}>Stop sharing</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    <details class="more-contacts">
+      <summary>Manage all contacts</summary>
+      <ul class="share-list">
+        {#each $contacts.filter(c => !c.sharing) as contact}
+          <li>
+            <span class="live-dot off"></span>
+            <span>{contact.nickname}</span>
+            <button class="small" onclick={() => toggleShare(contact.id, false)}>Share</button>
+          </li>
+        {/each}
+      </ul>
+    </details>
+  </section>
+
+  {#if locations.length === 0}
   <div class="panel empty-state">
     <span class="live-dot" style="background: var(--fg-faint); box-shadow: none"></span>
     <h2>Nothing logged yet</h2>
@@ -109,6 +145,7 @@
       </tbody>
     </table>
   </div>
+{/if}
 {/if}
 
 <style>
@@ -152,5 +189,64 @@
     align-items: center;
     gap: var(--space-4);
     margin-top: var(--space-3);
+  }
+
+  .sharing-panel {
+    margin-bottom: var(--space-5);
+  }
+
+  .sharing-panel h2 {
+    margin-bottom: var(--space-3);
+  }
+
+  .share-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .share-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .share-list .live-dot.off {
+    background: var(--fg-faint);
+    box-shadow: none;
+  }
+
+  .more-contacts {
+    margin-top: var(--space-4);
+  }
+
+  .more-contacts summary {
+    cursor: pointer;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+
+  button.small {
+    font-size: var(--text-xs);
+    padding: var(--space-1) var(--space-3);
+    margin-left: auto;
+  }
+
+  button.small.danger {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  button.small.danger:hover {
+    background: var(--danger);
+    color: var(--fg);
+  }
+
+  .muted {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
   }
 </style>

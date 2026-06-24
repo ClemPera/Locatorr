@@ -29,6 +29,15 @@ export async function getPairingPayload(): Promise<string> {
   return res.pairing_payload;
 }
 
+export interface Preview {
+  fingerprint: string;
+  relay_user_id: string;
+}
+
+export async function previewPairing(payload: string): Promise<Preview> {
+  return invoke<Preview>("preview_pairing", { payload });
+}
+
 export function addContact(payload: string, nickname: string): Promise<Contact> {
   return invoke<Contact>("add_contact", { payload, nickname });
 }

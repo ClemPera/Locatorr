@@ -25,6 +25,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_pairing_payload,
+            commands::preview_pairing,
             commands::add_contact,
             commands::list_contacts,
             commands::check_contact_fingerprint,
