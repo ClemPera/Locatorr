@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -53,14 +55,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := randomID()
-	s.store.mu.Lock()
-	s.store.accounts[userID] = Account{
+	s.store.PutAccount(Account{
 		UserID:    userID,
 		MlDsaPub:  mlDsaPub,
 		KemPub:    kemPub,
 		CreatedAt: time.Now(),
-	}
-	s.store.mu.Unlock()
+	})
 
 	writeJSON(w, http.StatusCreated, map[string]string{"user_id": userID})
 }
@@ -68,9 +68,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 // GET /v1/accounts/{id}
 func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
-	s.store.mu.RLock()
-	acc, ok := s.store.accounts[id]
-	s.store.mu.RUnlock()
+	acc, ok := s.store.GetAccount(id)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "no such account")
 		return
@@ -93,10 +91,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.mu.RLock()
-	_, ok := s.store.accounts[req.UserID]
-	s.store.mu.RUnlock()
-	if !ok {
+	if _, ok := s.store.GetAccount(req.UserID); !ok {
 		writeErr(w, http.StatusNotFound, "no such account")
 		return
 	}
@@ -107,9 +102,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.mu.Lock()
-	s.store.challenges[req.UserID] = Challenge{Nonce: nonce, ExpiresAt: time.Now().Add(2 * time.Minute)}
-	s.store.mu.Unlock()
+	s.store.PutChallenge(req.UserID, Challenge{Nonce: nonce, ExpiresAt: time.Now().Add(2 * time.Minute)})
 
 	writeJSON(w, http.StatusOK, map[string]string{"nonce": b64encode(nonce)})
 }
@@ -131,13 +124,8 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.store.mu.Lock()
-	ch, ok := s.store.challenges[req.UserID]
-	if ok {
-		delete(s.store.challenges, req.UserID) // one-time use
-	}
-	acc, accOk := s.store.accounts[req.UserID]
-	s.store.mu.Unlock()
+	ch, ok := s.store.PopChallenge(req.UserID)
+	acc, accOk := s.store.GetAccount(req.UserID)
 
 	if !ok || time.Now().After(ch.ExpiresAt) {
 		writeErr(w, http.StatusUnauthorized, "no active challenge, request a new one")
@@ -204,15 +192,12 @@ func (s *Server) handlePutLocation(w http.ResponseWriter, r *http.Request, userI
 		return
 	}
 
-	s.store.mu.RLock()
-	_, recipientExists := s.store.accounts[to]
-	s.store.mu.RUnlock()
-	if !recipientExists {
+	if _, recipientExists := s.store.GetAccount(to); !recipientExists {
 		writeErr(w, http.StatusNotFound, "recipient does not exist")
 		return
 	}
 
-	entry := RelayEntry{
+	s.store.PutRelay(RelayEntry{
 		From:          userID,
 		To:            to,
 		Ciphertext:    ciphertext,
@@ -221,10 +206,7 @@ func (s *Server) handlePutLocation(w http.ResponseWriter, r *http.Request, userI
 		Nonce:         nonce,
 		WrapNonce:     wrapNonce,
 		UpdatedAt:     time.Now(),
-	}
-	s.store.mu.Lock()
-	s.store.relay[relayKey(userID, to)] = entry // overwrite: latest only, no history
-	s.store.mu.Unlock()
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -241,25 +223,18 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request, userID stri
 		UpdatedAt     int64  `json:"updated_at"`
 	}
 
-	var out []item
-	s.store.mu.RLock()
-	for _, e := range s.store.relay {
-		if e.To == userID {
-			out = append(out, item{
-				From:          e.From,
-				Ciphertext:    b64encode(e.Ciphertext),
-				WrappedKey:    b64encode(e.WrappedKey),
-				KemCiphertext: b64encode(e.KemCiphertext),
-				Nonce:         b64encode(e.Nonce),
-				WrapNonce:     b64encode(e.WrapNonce),
-				UpdatedAt:     e.UpdatedAt.Unix(),
-			})
-		}
-	}
-	s.store.mu.RUnlock()
-
-	if out == nil {
-		out = []item{}
+	entries := s.store.InboxFor(userID)
+	out := make([]item, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, item{
+			From:          e.From,
+			Ciphertext:    b64encode(e.Ciphertext),
+			WrappedKey:    b64encode(e.WrappedKey),
+			KemCiphertext: b64encode(e.KemCiphertext),
+			Nonce:         b64encode(e.Nonce),
+			WrapNonce:     b64encode(e.WrapNonce),
+			UpdatedAt:     e.UpdatedAt.Unix(),
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -267,9 +242,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request, userID stri
 // DELETE /v1/locations/{recipient_id}
 func (s *Server) handleDeleteLocation(w http.ResponseWriter, r *http.Request, userID string) {
 	to := strings.TrimPrefix(r.URL.Path, "/v1/locations/")
-	s.store.mu.Lock()
-	delete(s.store.relay, relayKey(userID, to))
-	s.store.mu.Unlock()
+	s.store.DeleteRelay(userID, to)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -292,15 +265,31 @@ func (s *Server) routes() *http.ServeMux {
 }
 
 func main() {
+	ctx := context.Background()
+
+	var store *Store
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr != "" {
+		var err error
+		store, err = OpenStorePG(ctx, connStr)
+		if err != nil {
+			log.Fatalf("failed to open PostgreSQL store: %v", err)
+		}
+		log.Println("using PostgreSQL store")
+	} else {
+		store = NewStore()
+		log.Println("DATABASE_URL not set — using in-memory store")
+	}
+
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
 		log.Fatal(err)
 	}
 
 	s := &Server{
-		store:     NewStore(),
+		store:     store,
 		tokens:    NewTokenIssuer(secret, 15*time.Minute),
-		verifySig: RejectAllVerifier, // see auth.go: wire up circl/mldsa65 before shipping
+		verifySig: circlMldsa65Verifier,
 	}
 
 	log.Println("locshare relay listening on :8080")

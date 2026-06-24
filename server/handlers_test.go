@@ -90,10 +90,9 @@ func TestAuthChallengeVerifyAndRejectBadSignature(t *testing.T) {
 		t.Fatal("expected non-empty token")
 	}
 
-	// A failing verifier should reject regardless of input: this is the fail-closed
-	// default (RejectAllVerifier) that ships in production, exercised separately here.
+	// A failing verifier should reject regardless of input.
 	s2 := newTestServer()
-	s2.verifySig = RejectAllVerifier
+	s2.verifySig = func(_, _, _ []byte) bool { return false }
 	mux2 := s2.routes()
 	userID2 := registerAccount(t, mux2, "QQ==", "QQ==")
 	doJSON(t, mux2, "POST", "/v1/auth/challenge", map[string]string{"user_id": userID2}, nil)

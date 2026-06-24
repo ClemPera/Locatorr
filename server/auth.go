@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 )
 
 // --- Stateless session tokens ---
@@ -64,20 +66,16 @@ func (t *TokenIssuer) sign(payload string) string {
 
 // --- PQ signature verification ---
 //
-// NOT IMPLEMENTED HERE ON PURPOSE. Verifying the ML-DSA-65 signature on the auth challenge
-// needs a Go ML-DSA implementation (e.g. github.com/cloudflare/circl/sign/mldsa/mldsa65).
-// That package couldn't be fetched in this sandbox: its transitive dependency
-// golang.org/x/sys is hosted on a domain outside this environment's network allowlist.
-// Wire up a real implementation before this leaves your machine; the default below fails
-// closed (rejects everything) rather than silently accepting unverified signatures.
-//
-// Wiring it up with circl is three lines:
-//
-//	var pub mldsa65.PublicKey
-//	pub.UnmarshalBinary(account.MlDsaPub)
-//	ok := mldsa65.Verify(&pub, nonce, nil, signature)
+// Uses CIRCL (github.com/cloudflare/circl) for ML-DSA-65 verification against the
+// account's stored public key. This was stubbed to fail-closed in the initial scaffold
+// because circl's transitive dep golang.org/x/sys couldn't be fetched in the dev sandbox;
+// that network constraint is no longer present.
 type SignatureVerifier func(pub, msg, sig []byte) bool
 
-func RejectAllVerifier(_, _, _ []byte) bool {
-	return false
+func circlMldsa65Verifier(pub, msg, sig []byte) bool {
+	var pk mldsa65.PublicKey
+	if err := pk.UnmarshalBinary(pub); err != nil {
+		return false
+	}
+	return mldsa65.Verify(&pk, msg, nil, sig)
 }
