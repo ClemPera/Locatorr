@@ -25,7 +25,6 @@
 use ml_dsa::{Generate, Keypair, MlDsa65, Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use ml_dsa::{KeyExport as _, KeyInit as _};
 use ml_kem::{Decapsulate, DecapsulationKey, EncapsulationKey, Kem, MlKem768};
-use ml_kem::{KeyExport as _, KeyInit as _};
 use rand_core::OsRng;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 
@@ -59,7 +58,7 @@ impl Identity {
     pub fn generate() -> Self {
         let signing_key = SigningKey::<MlDsa65>::generate();
         let (kem_decap_key, kem_encap_key) = MlKem768::generate_keypair();
-        let x25519_secret = X25519Secret::random_from_rng(&mut OsRng);
+        let x25519_secret = X25519Secret::random_from_rng(OsRng);
         Self {
             signing_key,
             kem_decap_key,

@@ -7,12 +7,12 @@
 //! decapsulation uses the `Decapsulate` trait's `decapsulate_slice` convenience (handles the
 //! length check), not the manual `Array`/`Ciphertext` conversions an earlier pass guessed at.
 
-use aes_gcm::aead::{Aead, KeyInit as AeadKeyInit, OsRng as AeadOsRng};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit as AeadKeyInit, OsRng as AeadOsRng};
 use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce};
 use hkdf::Hkdf;
 use ml_kem::{Encapsulate, EncapsulationKey, MlKem768, TryKeyInit as _};
 use sha2::Sha256;
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
+use x25519_dalek::PublicKey as X25519Public;
 
 use crate::identity::Identity;
 
