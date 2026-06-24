@@ -23,6 +23,7 @@ pub fn run() {
             commands::get_pairing_payload,
             commands::add_contact,
             commands::list_contacts,
+            commands::check_contact_fingerprint,
             commands::verify_contact,
             commands::set_contact_sharing,
             commands::remove_contact,

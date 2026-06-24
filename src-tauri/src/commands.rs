@@ -287,6 +287,54 @@ pub fn update_settings(state: tauri::State<AppState>, settings: SettingsDto) -> 
     Ok(())
 }
 
+/// Recompute the pairing fingerprint from the contact's stored public keys and the local
+/// identity, then compare to the stored fingerprint. Returns `true` if they match (key
+/// material hasn't changed since pairing), `false` if the keys have changed (contact may
+/// have re-paired/re-installed). The frontend uses this to flag verified contacts whose
+/// key material no longer matches the originally-verified fingerprint.
+#[tauri::command]
+pub fn check_contact_fingerprint(
+    state: tauri::State<AppState>,
+    contact_id: String,
+) -> Result<bool, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let my_identity = load_or_create_identity(&conn)?;
+
+    let (ml_dsa_pub, kem_pub, x25519_pub_vec, stored_fingerprint): (
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT ml_dsa_pub, kem_pub, x25519_pub, fingerprint FROM contacts WHERE id = ?1",
+            params![contact_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("contact not found: {}", e))?;
+
+    let x25519_pub: [u8; 32] = x25519_pub_vec
+        .try_into()
+        .map_err(|_| "stored x25519_pub is not 32 bytes".to_string())?;
+
+    let contact_bundle = PublicBundle {
+        ml_dsa_pub,
+        kem_pub,
+        x25519_pub,
+    };
+
+    let recomputed = pairing::fingerprint(&my_identity.public_bundle(), &contact_bundle);
+
+    Ok(recomputed == stored_fingerprint)
+}
+
 /// Always empty in this pass: nothing populates `received_locations` yet, since the relay
 /// server HTTP client isn't wired up (see design doc section 10's open questions). The command
 /// is real and the table is real, there's just nothing to put in it until that lands.
