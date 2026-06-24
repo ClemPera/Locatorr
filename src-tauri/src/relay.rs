@@ -243,3 +243,97 @@ pub async fn poll_inbox(server_url: &str, token: &str) -> Result<Vec<RawShare>, 
         })
         .collect()
 }
+
+// --- pairing requests ---
+
+#[derive(Serialize)]
+struct PairingRequestBody {
+    to: String,
+}
+
+#[derive(Deserialize)]
+pub struct PairingRequestItem {
+    pub id: String,
+    pub from: String,
+    pub created_at: i64,
+}
+
+/// Send a pairing request to another user.
+pub async fn request_pairing(server_url: &str, token: &str, to: &str) -> Result<String, String> {
+    let resp = client()
+        .post(format!(
+            "{}/v1/pairing/request",
+            server_url.trim_end_matches('/')
+        ))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&PairingRequestBody {
+            to: to.to_string(),
+        })
+        .send()
+        .await
+        .map_err(|e| format!("pairing request failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("pairing request: server returned {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct R {
+        id: String,
+    }
+    let body: R = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {}", e))?;
+    Ok(body.id)
+}
+
+/// List pending pairing requests addressed to this user.
+pub async fn list_pairing_requests(
+    server_url: &str,
+    token: &str,
+) -> Result<Vec<PairingRequestItem>, String> {
+    let resp = client()
+        .get(format!(
+            "{}/v1/pairing/inbox",
+            server_url.trim_end_matches('/')
+        ))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("pairing inbox failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("pairing inbox: server returned {}", resp.status()));
+    }
+    resp.json()
+        .await
+        .map_err(|e| format!("bad response: {}", e))
+}
+
+/// Accept a pairing request. Returns the sender's user_id.
+pub async fn accept_pairing_request(
+    server_url: &str,
+    token: &str,
+    request_id: &str,
+) -> Result<String, String> {
+    let resp = client()
+        .post(format!(
+            "{}/v1/pairing/{}/accept",
+            server_url.trim_end_matches('/'),
+            request_id
+        ))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("accept failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("accept: server returned {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct R {
+        from: String,
+    }
+    let body: R = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {}", e))?;
+    Ok(body.from)
+}

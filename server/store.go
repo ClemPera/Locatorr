@@ -35,14 +35,25 @@ type Challenge struct {
 	ExpiresAt time.Time
 }
 
+// PairingRequest is a one-way request from one user to pair with another.
+// The target must approve before keys are exchanged.
+type PairingRequest struct {
+	ID        string
+	From      string
+	To        string
+	Status    string // "pending", "accepted", "rejected"
+	CreatedAt time.Time
+}
+
 // Store is a mutex-guarded cache backed by either an in-memory map (tests)
 // or PostgreSQL (production). The maps serve as a fast read cache; all writes
 // go through to the backing store first.
 type Store struct {
-	mu         sync.RWMutex
-	accounts   map[string]Account
-	challenges map[string]Challenge
-	relay      map[string]RelayEntry
+	mu              sync.RWMutex
+	accounts        map[string]Account
+	challenges      map[string]Challenge
+	relay           map[string]RelayEntry
+	pairingRequests map[string]PairingRequest
 
 	pool *pgxpool.Pool // nil means in-memory-only
 }
@@ -70,6 +81,12 @@ CREATE TABLE IF NOT EXISTS relay (
 	wrap_nonce     BYTEA NOT NULL,
 	updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
 	PRIMARY KEY (from_user, to_user)
+CREATE TABLE IF NOT EXISTS pairing_requests (
+	id         TEXT PRIMARY KEY,
+	from_user  TEXT NOT NULL REFERENCES accounts(user_id),
+	to_user    TEXT NOT NULL REFERENCES accounts(user_id),
+	status     TEXT NOT NULL DEFAULT 'pending',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 `
 
@@ -77,9 +94,10 @@ CREATE TABLE IF NOT EXISTS relay (
 // Suitable for tests and single-use runs.
 func NewStore() *Store {
 	return &Store{
-		accounts:   make(map[string]Account),
-		challenges: make(map[string]Challenge),
-		relay:      make(map[string]RelayEntry),
+		accounts:        make(map[string]Account),
+		challenges:      make(map[string]Challenge),
+		relay:           make(map[string]RelayEntry),
+		pairingRequests: make(map[string]PairingRequest),
 	}
 }
 
@@ -205,6 +223,51 @@ func (s *Store) InboxFor(userID string) []RelayEntry {
 	return out
 }
 
+// --- pairing requests ---
+
+func (s *Store) PutPairingRequest(pr PairingRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pairingRequests[pr.ID] = pr
+	if s.pool != nil {
+		_, _ = s.pool.Exec(context.Background(),
+			`INSERT INTO pairing_requests (id, from_user, to_user, status, created_at)
+			 VALUES ($1,$2,$3,$4,$5)
+			 ON CONFLICT (id) DO UPDATE SET status=$4`,
+			pr.ID, pr.From, pr.To, pr.Status, pr.CreatedAt,
+		)
+	}
+}
+
+func (s *Store) PendingRequestsFor(userID string) []PairingRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []PairingRequest
+	for _, pr := range s.pairingRequests {
+		if pr.To == userID && pr.Status == "pending" {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
+func (s *Store) UpdatePairingRequest(id, status string) (PairingRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pr, ok := s.pairingRequests[id]
+	if !ok {
+		return PairingRequest{}, false
+	}
+	pr.Status = status
+	s.pairingRequests[id] = pr
+	if s.pool != nil {
+		_, _ = s.pool.Exec(context.Background(),
+			"UPDATE pairing_requests SET status=$1 WHERE id=$2", status, id,
+		)
+	}
+	return pr, true
+}
+
 // --- initial load from PG ---
 
 func (s *Store) loadAll(ctx context.Context) error {
@@ -249,6 +312,17 @@ func (s *Store) loadAll(ctx context.Context) error {
 			return err
 		}
 		s.relay[relayKey(e.From, e.To)] = e
+	}
+
+	prRows, err := s.pool.Query(ctx, "SELECT id, from_user, to_user, status, created_at FROM pairing_requests")
+	if err == nil {
+		defer prRows.Close()
+		for prRows.Next() {
+			var pr PairingRequest
+			if err := prRows.Scan(&pr.ID, &pr.From, &pr.To, &pr.Status, &pr.CreatedAt); err == nil {
+				s.pairingRequests[pr.ID] = pr
+			}
+		}
 	}
 	return nil
 }

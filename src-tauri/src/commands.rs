@@ -170,7 +170,7 @@ fn encode_pairing_payload(_bundle: &PublicBundle, relay_user_id: &str) -> String
     }
     // Not registered: generate a compact local identifier.
     // The recipient must use the text-based payload below the QR.
-    format!("locatorr://pair?local=1")
+    "locatorr://pair?local=1".to_string()
 }
 
 fn decode_pairing_payload(payload: &str) -> Result<(PublicBundle, String), String> {
@@ -885,4 +885,171 @@ pub async fn poll_inbox_for_locations(
     }
 
     Ok(results)
+}
+
+// ── pairing request commands ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct PairingRequestDto {
+    pub id: String,
+    pub from: String,
+    pub created_at: i64,
+}
+
+/// Send a pairing request to another user (identified by their relay user_id from a QR/link).
+#[tauri::command]
+pub async fn send_pairing_request(
+    state: tauri::State<'_, AppState>,
+    server_url: String,
+    to_user_id: String,
+) -> Result<String, String> {
+    let token: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'relay_token'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    if token.is_empty() {
+        return Err("Not authenticated with relay. Go to Settings and save the relay URL first.".to_string());
+    }
+    relay::request_pairing(&server_url, &token, &to_user_id).await
+}
+
+/// List pending pairing requests addressed to this user.
+#[tauri::command]
+pub async fn list_pairing_requests(
+    state: tauri::State<'_, AppState>,
+    server_url: String,
+) -> Result<Vec<PairingRequestDto>, String> {
+    let token: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'relay_token'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    if token.is_empty() {
+        return Ok(vec![]);
+    }
+    let items = relay::list_pairing_requests(&server_url, &token).await?;
+    Ok(items
+        .into_iter()
+        .map(|i| PairingRequestDto {
+            id: i.id,
+            from: i.from,
+            created_at: i.created_at,
+        })
+        .collect())
+}
+
+/// Accept a pairing request. Fetches the sender's key bundle, adds them as a contact,
+/// and sends a reciprocal request back so the other side can add you too.
+#[tauri::command]
+pub async fn accept_pairing_request(
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    server_url: String,
+    request_id: String,
+    nickname: String,
+) -> Result<ContactDto, String> {
+    let token: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'relay_token'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    if token.is_empty() {
+        return Err("Not authenticated with relay.".to_string());
+    }
+
+    // Accept on the relay
+    let from_user_id = relay::accept_pairing_request(&server_url, &token, &request_id).await?;
+
+    // Fetch sender's key bundle
+    let resp = reqwest::get(format!(
+        "{}/v1/accounts/{}",
+        server_url.trim_end_matches('/'),
+        from_user_id
+    ))
+    .await
+    .map_err(|e| format!("failed to fetch keys: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("relay returned {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct AccountResponse {
+        ml_dsa_pub: String,
+        kem_pub: String,
+        x25519_pub: String,
+    }
+    let account: AccountResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {}", e))?;
+
+    let their_bundle = PublicBundle {
+        ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+            .map_err(|_| "invalid ml_dsa_pub".to_string())?,
+        kem_pub: B64.decode(account.kem_pub)
+            .map_err(|_| "invalid kem_pub".to_string())?,
+        x25519_pub: B64.decode(account.x25519_pub)
+            .map_err(|_| "invalid x25519_pub".to_string())?
+            .try_into()
+            .map_err(|_| "x25519_pub wrong size".to_string())?,
+    };
+
+    // Store contact (in a block so the lock is released before the await below)
+    let fingerprint;
+    let contact_id;
+    {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        let my_identity = load_or_create_identity(&conn, &app)?;
+        fingerprint = pairing::fingerprint(&my_identity.public_bundle(), &their_bundle);
+        let id = random_id();
+        let created_at = now_unix();
+
+        conn.execute(
+            "INSERT INTO contacts (id, nickname, user_id, ml_dsa_pub, kem_pub, x25519_pub, fingerprint, verified, sharing, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8)",
+            params![
+                id,
+                nickname,
+                from_user_id,
+                their_bundle.ml_dsa_pub,
+                their_bundle.kem_pub,
+                their_bundle.x25519_pub.to_vec(),
+                fingerprint,
+                created_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        contact_id = id;
+    } // lock released
+
+    // Send reciprocal request so the other side can add us too
+    let _ = relay::request_pairing(&server_url, &token, &from_user_id).await;
+
+    Ok(ContactDto {
+        id: contact_id,
+        nickname,
+        relay_user_id: from_user_id,
+        fingerprint,
+        verified: false,
+        sharing: false,
+        created_at: now_unix(),
+    })
 }

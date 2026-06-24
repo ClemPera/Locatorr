@@ -39,6 +39,9 @@ pub fn run() {
             commands::authenticate_with_relay,
             commands::send_location_update,
             commands::poll_inbox_for_locations,
+            commands::send_pairing_request,
+            commands::list_pairing_requests,
+            commands::accept_pairing_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

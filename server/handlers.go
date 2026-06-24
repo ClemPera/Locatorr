@@ -250,6 +250,78 @@ func (s *Server) handleDeleteLocation(w http.ResponseWriter, r *http.Request, us
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// POST /v1/pairing/request
+// { "to": "<user_id>" } — send a pairing request (auth required)
+func (s *Server) handlePairingRequest(w http.ResponseWriter, r *http.Request, userID string) {
+	var req struct {
+		To string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" {
+		writeErr(w, http.StatusBadRequest, "missing 'to' field")
+		return
+	}
+	if _, ok := s.store.GetAccount(req.To); !ok {
+		writeErr(w, http.StatusNotFound, "recipient not found")
+		return
+	}
+	pr := PairingRequest{
+		ID:        randomID(),
+		From:      userID,
+		To:        req.To,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+	}
+	s.store.PutPairingRequest(pr)
+	writeJSON(w, http.StatusCreated, map[string]string{"id": pr.ID})
+}
+
+// GET /v1/pairing/inbox — list pending pairing requests addressed to this user
+func (s *Server) handlePairingInbox(w http.ResponseWriter, r *http.Request, userID string) {
+	requests := s.store.PendingRequestsFor(userID)
+	type item struct {
+		ID        string `json:"id"`
+		From      string `json:"from"`
+		CreatedAt int64  `json:"created_at"`
+	}
+	out := make([]item, 0, len(requests))
+	for _, pr := range requests {
+		out = append(out, item{ID: pr.ID, From: pr.From, CreatedAt: pr.CreatedAt.Unix()})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /v1/pairing/{id}/accept — accept a pairing request
+func (s *Server) handlePairingAccept(w http.ResponseWriter, r *http.Request, userID string) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/pairing/")
+	id = strings.TrimSuffix(id, "/accept")
+	pr, ok := s.store.UpdatePairingRequest(id, "accepted")
+	if !ok {
+		writeErr(w, http.StatusNotFound, "request not found")
+		return
+	}
+	if pr.To != userID {
+		writeErr(w, http.StatusForbidden, "not your request")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"from": pr.From, "status": "accepted"})
+}
+
+// POST /v1/pairing/{id}/reject — reject a pairing request
+func (s *Server) handlePairingReject(w http.ResponseWriter, r *http.Request, userID string) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/pairing/")
+	id = strings.TrimSuffix(id, "/reject")
+	pr, ok := s.store.UpdatePairingRequest(id, "rejected")
+	if !ok {
+		writeErr(w, http.StatusNotFound, "request not found")
+		return
+	}
+	if pr.To != userID {
+		writeErr(w, http.StatusForbidden, "not your request")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func randomID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -265,6 +337,10 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("PUT /v1/locations/{id}", s.authMiddleware(s.handlePutLocation))
 	mux.HandleFunc("GET /v1/locations/inbox", s.authMiddleware(s.handleInbox))
 	mux.HandleFunc("DELETE /v1/locations/{id}", s.authMiddleware(s.handleDeleteLocation))
+	mux.HandleFunc("POST /v1/pairing/request", s.authMiddleware(s.handlePairingRequest))
+	mux.HandleFunc("GET /v1/pairing/inbox", s.authMiddleware(s.handlePairingInbox))
+	mux.HandleFunc("POST /v1/pairing/{id}/accept", s.authMiddleware(s.handlePairingAccept))
+	mux.HandleFunc("POST /v1/pairing/{id}/reject", s.authMiddleware(s.handlePairingReject))
 	return mux
 }
 

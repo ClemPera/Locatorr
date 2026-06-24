@@ -7,12 +7,18 @@
     setContactSharing,
     removeContact,
     checkContactFingerprint,
+    listPairingRequests,
+    acceptPairingRequest,
+    getSettings,
+    type PairingRequest,
   } from "$lib/api";
   import FingerprintMeter from "$lib/components/FingerprintMeter.svelte";
 
   let expandedId = $state<string | null>(null);
   let busyId = $state<string | null>(null);
   let keyChanged = $state<Record<string, boolean>>({});
+  let requests = $state<PairingRequest[]>([]);
+  let acceptNickname = $state("");
 
   onMount(async () => {
     await refreshContacts();
@@ -29,7 +35,29 @@
         }
       }
     }
+    await loadRequests();
   });
+
+  async function loadRequests() {
+    const settings = await getSettings();
+    if (settings.server_url) {
+      requests = await listPairingRequests(settings.server_url);
+    }
+  }
+
+  async function doAccept(requestId: string) {
+    const settings = await getSettings();
+    if (!settings.server_url) return;
+    busyId = requestId;
+    try {
+      await acceptPairingRequest(settings.server_url, requestId, acceptNickname || "Contact");
+      await refreshContacts();
+      await loadRequests();
+      acceptNickname = "";
+    } finally {
+      busyId = null;
+    }
+  }
 
   function toggleExpanded(id: string) {
     expandedId = expandedId === id ? null : id;
@@ -79,6 +107,23 @@
     <a href="/pair"><button class="primary">Pair with someone</button></a>
   </div>
 {:else}
+  <!-- Pending pairing requests -->
+  {#if requests.length > 0}
+    <section class="panel requests-panel">
+      <h2>Pairing requests</h2>
+      {#each requests as req}
+        <div class="request-row">
+          <span>Someone wants to pair with you</span>
+          <span class="mono">{req.from}</span>
+          <input bind:value={acceptNickname} placeholder="Name them" />
+          <button class="primary small" disabled={busyId === req.id} onclick={() => doAccept(req.id)}>
+            Accept
+          </button>
+        </div>
+      {/each}
+    </section>
+  {/if}
+
   <ul class="list">
     {#each $contacts as contact}
       <li class="panel row">

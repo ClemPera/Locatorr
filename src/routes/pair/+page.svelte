@@ -1,22 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPairingPayload, previewPairing, addContact, verifyContact, type Contact } from "$lib/api";
-  import { refreshContacts } from "$lib/stores";
+  import { getPairingPayload, sendPairingRequest, getSettings } from "$lib/api";
   import PairingQr from "$lib/components/PairingQr.svelte";
-  import FingerprintMeter from "$lib/components/FingerprintMeter.svelte";
   import { scan } from "@tauri-apps/plugin-barcode-scanner";
 
   let myPayload = $state("");
   let copied = $state(false);
 
   let theirPayload = $state("");
-  let nickname = $state("");
-  let adding = $state(false);
-  let addError = $state("");
-  let newContact = $state<Contact | null>(null);
+  let requestStatus = $state("");
+  let sending = $state(false);
   let scanning = $state(false);
-  let previewFingerprint = $state("");
-  let previewing = $state(false);
 
   onMount(async () => {
     myPayload = await getPairingPayload();
@@ -28,48 +22,35 @@
     setTimeout(() => (copied = false), 1500);
   }
 
-  async function submitAddContact(event: Event) {
+  function extractUserId(payload: string): string | null {
+    // locatorr://pair?uid=<user_id>
+    const m = payload.match(/[?&]uid=([^&]+)/);
+    return m ? m[1] : null;
+  }
+
+  async function sendRequest(event: Event) {
     event.preventDefault();
-    addError = "";
-    previewFingerprint = "";
-    previewing = true;
-    try {
-      const preview = await previewPairing(theirPayload.trim());
-      previewFingerprint = preview.fingerprint;
-    } catch (err) {
-      addError = typeof err === "string" ? err : "Couldn't decode that code.";
-      previewing = false;
+    requestStatus = "";
+    const uid = extractUserId(theirPayload.trim());
+    if (!uid) {
+      requestStatus = "Invalid pairing code — could not find a user ID.";
+      return;
     }
-  }
-
-  async function confirmAddContact() {
-    addError = "";
-    adding = true;
+    const settings = await getSettings();
+    if (!settings.server_url) {
+      requestStatus = "No relay server configured. Go to Settings first.";
+      return;
+    }
+    sending = true;
     try {
-      newContact = await addContact(theirPayload.trim(), nickname.trim() || "Unnamed contact");
-      await refreshContacts();
+      await sendPairingRequest(settings.server_url, uid);
+      requestStatus = "Pairing request sent! They'll need to approve it before the connection is established.";
       theirPayload = "";
-      nickname = "";
-      previewFingerprint = "";
-      previewing = false;
     } catch (err) {
-      addError = typeof err === "string" ? err : "Couldn't add that contact.";
-      previewing = false;
+      requestStatus = typeof err === "string" ? err : "Failed to send request.";
     } finally {
-      adding = false;
+      sending = false;
     }
-  }
-
-  function cancelPreview() {
-    previewFingerprint = "";
-    previewing = false;
-  }
-
-  async function markVerified() {
-    if (!newContact) return;
-    await verifyContact(newContact.id);
-    newContact = { ...newContact, verified: true };
-    await refreshContacts();
   }
 
   async function scanQR() {
@@ -80,7 +61,7 @@
         theirPayload = result.content;
       }
     } catch {
-      // user cancelled or no camera
+      // user cancelled
     } finally {
       scanning = false;
     }
@@ -96,7 +77,7 @@
   <section class="panel">
     <h2>Your pairing code</h2>
     {#if myPayload.includes("local=1")}
-      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a> and save a relay URL first — then your QR will link directly to your account.</p>
+      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a> and save a relay URL — your QR will link to your account.</p>
     {:else}
       <p>Show this QR to someone in person, or copy the link below to send remotely.</p>
     {/if}
@@ -110,66 +91,34 @@
   </section>
 
   <section class="panel">
-    <h2>Add a contact</h2>
-    <p>Paste the code they shared with you.</p>
-    <form onsubmit={submitAddContact}>
-      <label class="field">
-        <span class="eyebrow">nickname</span>
-        <input bind:value={nickname} placeholder="What do you call them?" />
-      </label>
+    <h2>Add someone</h2>
+    <p>Scan their QR or paste their link. This sends a pairing request — they must approve before the connection is made.</p>
+    <form onsubmit={sendRequest}>
       <label class="field">
         <span class="eyebrow">their code</span>
-        <textarea class="data" rows="3" bind:value={theirPayload} placeholder="Paste pairing code here"
-        ></textarea>
+        <textarea class="data" rows="3" bind:value={theirPayload} placeholder="Paste pairing link here"></textarea>
         <button type="button" onclick={scanQR} disabled={scanning}>
           {scanning ? "Scanning…" : "Scan QR code"}
         </button>
       </label>
-      {#if addError}
-        <p class="error">{addError}</p>
+      {#if requestStatus}
+        <p class="status">{requestStatus}</p>
       {/if}
-      {#if previewFingerprint}
-        <div class="confirm-box">
-          <p class="eyebrow">verify fingerprint</p>
-          <FingerprintMeter value={previewFingerprint} />
-          <p class="hint">
-            Compare this code with {nickname || "them"} over a separate channel before
-            adding. This confirms nobody tampered with the keys in transit.
-          </p>
-          <div class="confirm-actions">
-            <button class="primary" onclick={confirmAddContact} disabled={adding}>
-              {adding ? "Adding…" : "Confirm — add contact"}
-            </button>
-            <button onclick={cancelPreview}>Cancel</button>
-          </div>
-        </div>
-      {:else}
-        <button class="primary" type="submit" disabled={adding || previewing || !theirPayload.trim()}>
-          {previewing ? "Checking code…" : "Preview"}
-        </button>
-      {/if}
+      <button class="primary" type="submit" disabled={sending || !theirPayload.trim()}>
+        {sending ? "Sending…" : "Send pairing request"}
+      </button>
     </form>
   </section>
 </div>
 
-{#if newContact}
-  <section class="panel verify-panel">
-    <p class="eyebrow">verify {newContact.nickname}</p>
-    <h2>Read this aloud to each other</h2>
-    <p>
-      Compare this code over a call, in person, or any channel other than the one you used to
-      pair. If it matches on both screens, the connection wasn't tampered with in transit.
-    </p>
-    <FingerprintMeter value={newContact.fingerprint} />
-    {#if newContact.verified}
-      <p class="confirmed">✓ Marked verified.</p>
-    {:else}
-      <button class="primary" onclick={markVerified}>It matches — mark verified</button>
-    {/if}
-  </section>
-{/if}
-
 <style>
+  .page-head {
+    margin-bottom: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
   .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -216,29 +165,9 @@
     margin-bottom: var(--space-3);
   }
 
-  .field input {
-    font-family: var(--font-ui);
-  }
-
-  .error {
-    color: var(--danger);
-    margin-bottom: var(--space-3);
-  }
-
-  .verify-panel {
-    margin-top: var(--space-5);
-  }
-
-  .verify-panel p {
-    max-width: 36rem;
-  }
-
-  .confirmed {
+  .status {
     color: var(--signal);
-    margin-top: var(--space-3);
-  }
-
-  .verify-panel button {
-    margin-top: var(--space-3);
+    margin-bottom: var(--space-3);
+    max-width: 36rem;
   }
 </style>

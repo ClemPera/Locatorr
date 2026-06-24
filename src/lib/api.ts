@@ -96,3 +96,27 @@ export function sendLocationUpdate(
 export function pollInboxForLocations(serverUrl: string): Promise<ReceivedLocation[]> {
   return invoke<ReceivedLocation[]>("poll_inbox_for_locations", { serverUrl });
 }
+
+// ── pairing requests ──
+
+export interface PairingRequest {
+  id: string;
+  from: string;
+  created_at: number;
+}
+
+export function sendPairingRequest(serverUrl: string, toUserId: string): Promise<string> {
+  return invoke<string>("send_pairing_request", { serverUrl, toUserId });
+}
+
+export function listPairingRequests(serverUrl: string): Promise<PairingRequest[]> {
+  return invoke<PairingRequest[]>("list_pairing_requests", { serverUrl });
+}
+
+export function acceptPairingRequest(
+  serverUrl: string,
+  requestId: string,
+  nickname: string,
+): Promise<Contact> {
+  return invoke<Contact>("accept_pairing_request", { serverUrl, requestId, nickname });
+}
