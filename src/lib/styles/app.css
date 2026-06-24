@@ -61,6 +61,8 @@ body {
   font-size: var(--text-md);
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  /* Prevent content from drawing behind the status bar on Android */
+  padding-top: env(safe-area-inset-top);
 }
 
 @media (prefers-reduced-motion: reduce) {
