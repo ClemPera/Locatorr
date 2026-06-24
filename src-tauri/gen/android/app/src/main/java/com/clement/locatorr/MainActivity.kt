@@ -1,6 +1,5 @@
 package com.clement.locatorr
 
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 
@@ -8,6 +7,8 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    startService(Intent(this, LocationService::class.java))
+    // LocationService is not auto-started — it requires runtime permissions
+    // and should only start when the user explicitly enables background sharing.
+    // Foreground location is handled by tauri-plugin-geolocation.
   }
 }
