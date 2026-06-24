@@ -259,7 +259,11 @@ pub fn get_pairing_payload(
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     Ok(PublicBundleDto {
-        pairing_payload: encode_pairing_payload(&identity.public_bundle(), &relay_user_id, &username),
+        pairing_payload: encode_pairing_payload(
+            &identity.public_bundle(),
+            &relay_user_id,
+            &username,
+        ),
     })
 }
 
@@ -404,12 +408,20 @@ pub async fn set_my_username(
     let (token, my_id) = {
         let conn = state.conn.lock().map_err(|e| e.to_string())?;
         let token: String = conn
-            .query_row("SELECT value FROM settings WHERE key='relay_token'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key='relay_token'",
+                [],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
         let my_id: String = conn
-            .query_row("SELECT value FROM settings WHERE key='relay_user_id'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key='relay_user_id'",
+                [],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();

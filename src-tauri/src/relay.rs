@@ -363,6 +363,9 @@ pub async fn lookup_username(server_url: &str, username: &str) -> Result<String,
     struct R {
         user_id: String,
     }
-    let body: R = resp.json().await.map_err(|e| format!("bad response: {}", e))?;
+    let body: R = resp
+        .json()
+        .await
+        .map_err(|e| format!("bad response: {}", e))?;
     Ok(body.user_id)
 }
