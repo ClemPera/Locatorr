@@ -60,12 +60,32 @@ cargo clippy -- -D warnings
 
 ```bash
 cd server
-go build ./...
+
+# Copy and edit the environment file
+cp .env.example .env
+# Edit .env with your PostgreSQL connection string:
+#   DATABASE_URL=postgres://user:password@localhost:5432/locatorr
+
+# Without .env, the server uses an in-memory store (data lost on restart).
+
+# Run
+go run .
+# or
+go build -o locatorr-relay . && ./locatorr-relay
+
+# Tests
 go test ./... -v
 go vet ./...
 ```
 
-To start the relay with PostgreSQL, set `DATABASE_URL` (e.g. `postgres://user:pass@localhost/locatorr`). Without it, the server uses an in-memory store for development.
+**PostgreSQL setup** (one-time):
+
+```sql
+CREATE DATABASE locatorr;
+-- The server auto-creates tables on first run. No manual schema needed.
+```
+
+The server listens on `:8080`. API endpoints registered: `POST /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/lookup?username=`, `POST /v1/auth/challenge`, `POST /v1/auth/verify`, `PUT /v1/locations/{id}`, `GET /v1/locations/inbox`, `DELETE /v1/locations/{id}`, `POST /v1/pairing/request`, `GET /v1/pairing/inbox`, `POST /v1/pairing/{id}/accept`, `POST /v1/pairing/{id}/reject`.
 
 ### Tauri desktop app
 

@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/cloudflare/circl v1.6.4
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/joho/godotenv v1.5.1
 )
 
 require (

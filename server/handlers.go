@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 type Server struct {
@@ -374,6 +376,8 @@ func (s *Server) routes() *http.ServeMux {
 }
 
 func main() {
+	_ = godotenv.Load() // ignore error if .env doesn't exist
+
 	ctx := context.Background()
 
 	var store *Store
