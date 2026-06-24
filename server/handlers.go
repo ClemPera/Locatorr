@@ -405,6 +405,11 @@ func main() {
 		verifySig: circlMldsa65Verifier,
 	}
 
-	log.Println("locshare relay listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", s.routes()))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("locshare relay listening on :%s\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, s.routes()))
 }
