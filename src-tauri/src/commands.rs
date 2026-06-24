@@ -915,7 +915,10 @@ pub async fn send_pairing_request(
         .unwrap_or_default()
     };
     if token.is_empty() {
-        return Err("Not authenticated with relay. Go to Settings and save the relay URL first.".to_string());
+        return Err(
+            "Not authenticated with relay. Go to Settings and save the relay URL first."
+                .to_string(),
+        );
     }
     relay::request_pairing(&server_url, &token, &to_user_id).await
 }
@@ -1002,11 +1005,14 @@ pub async fn accept_pairing_request(
         .map_err(|e| format!("bad response: {}", e))?;
 
     let their_bundle = PublicBundle {
-        ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+        ml_dsa_pub: B64
+            .decode(account.ml_dsa_pub)
             .map_err(|_| "invalid ml_dsa_pub".to_string())?,
-        kem_pub: B64.decode(account.kem_pub)
+        kem_pub: B64
+            .decode(account.kem_pub)
             .map_err(|_| "invalid kem_pub".to_string())?,
-        x25519_pub: B64.decode(account.x25519_pub)
+        x25519_pub: B64
+            .decode(account.x25519_pub)
             .map_err(|_| "invalid x25519_pub".to_string())?
             .try_into()
             .map_err(|_| "x25519_pub wrong size".to_string())?,

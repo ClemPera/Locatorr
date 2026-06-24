@@ -266,14 +266,15 @@ pub async fn request_pairing(server_url: &str, token: &str, to: &str) -> Result<
             server_url.trim_end_matches('/')
         ))
         .header("Authorization", format!("Bearer {}", token))
-        .json(&PairingRequestBody {
-            to: to.to_string(),
-        })
+        .json(&PairingRequestBody { to: to.to_string() })
         .send()
         .await
         .map_err(|e| format!("pairing request failed: {}", e))?;
     if !resp.status().is_success() {
-        return Err(format!("pairing request: server returned {}", resp.status()));
+        return Err(format!(
+            "pairing request: server returned {}",
+            resp.status()
+        ));
     }
     #[derive(Deserialize)]
     struct R {
