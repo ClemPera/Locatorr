@@ -60,9 +60,14 @@ body {
   font-family: var(--font-ui);
   font-size: var(--text-md);
   line-height: 1.45;
+  overflow: hidden; /* TODO: This will cause issue for other devices */
   -webkit-font-smoothing: antialiased;
+}
+
+body {
   /* Prevent content from drawing behind the status bar on Android */
   padding-top: env(safe-area-inset-top);
+  /* padding-bottom: env(safe-area-inset-bottom); */
 }
 
 @media (prefers-reduced-motion: reduce) {
