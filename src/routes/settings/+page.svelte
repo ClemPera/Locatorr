@@ -1,19 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getSettings, updateSettings, registerWithRelay, authenticateWithRelay } from "$lib/api";
+  import { getSettings, updateSettings, registerWithRelay, authenticateWithRelay, setMyUsername } from "$lib/api";
 
   let serverUrl = $state("");
   let pollIntervalSecs = $state(30);
   let saved = $state(false);
   let loading = $state(true);
   let relayStatus = $state("");
+  let myUsername = $state("");
+  let usernameSaved = $state(false);
 
   onMount(async () => {
     const settings = await getSettings();
     serverUrl = settings.server_url;
     pollIntervalSecs = settings.poll_interval_secs;
     if (settings.relay_user_id) {
-      relayStatus = `Your account ID: ${settings.relay_user_id}`;
+      relayStatus = `Account: ${settings.relay_user_id}`;
+      myUsername = settings.username || "";
     }
     loading = false;
   });
@@ -24,17 +27,27 @@
     saved = true;
     setTimeout(() => (saved = false), 1500);
 
-    // Register with relay and authenticate
     if (serverUrl.trim()) {
-      relayStatus = "Registering with relay…";
+      relayStatus = "Registering…";
       try {
-        await registerWithRelay(serverUrl);
+        const uid = await registerWithRelay(serverUrl);
         relayStatus = "Authenticating…";
         await authenticateWithRelay(serverUrl);
-        relayStatus = "Connected ✓";
+        relayStatus = `Account: ${uid}`;
       } catch (err) {
         relayStatus = `Relay error: ${err}`;
       }
+    }
+  }
+
+  async function doSetUsername() {
+    if (!myUsername.trim()) return;
+    try {
+      await setMyUsername(serverUrl, myUsername.trim());
+      usernameSaved = true;
+      setTimeout(() => (usernameSaved = false), 1500);
+    } catch (err) {
+      relayStatus = `Username error: ${err}`;
     }
   }
 </script>
@@ -73,6 +86,24 @@
       <p class="relay-status">{relayStatus}</p>
     {/if}
   </form>
+
+  {#if relayStatus.startsWith("Account:")}
+    <section class="panel" style="margin-top: var(--space-5)">
+      <h2>Your identity</h2>
+      <label class="field">
+        <span class="eyebrow">username</span>
+        <div class="row">
+          <input bind:value={myUsername} placeholder="Choose a username" />
+          <button onclick={doSetUsername} disabled={!myUsername.trim()}>
+            {usernameSaved ? "Saved ✓" : "Set username"}
+          </button>
+        </div>
+        <span class="help">
+          This is what others use to find and pair with you. Your QR code will include it.
+        </span>
+      </label>
+    </section>
+  {/if}
 {/if}
 
 <style>
@@ -98,5 +129,18 @@
     color: var(--fg-muted);
     font-size: var(--text-sm);
     margin-top: var(--space-3);
+  }
+
+  h2 {
+    margin-bottom: var(--space-3);
+  }
+
+  .row {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .row input {
+    flex: 1;
   }
 </style>

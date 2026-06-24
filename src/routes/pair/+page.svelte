@@ -1,13 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPairingPayload, getSettings, setMyUsername, searchAndRequest, sendPairingRequest } from "$lib/api";
+  import { getPairingPayload, getSettings, sendPairingRequest, searchAndRequest } from "$lib/api";
   import PairingQr from "$lib/components/PairingQr.svelte";
   import { scan } from "@tauri-apps/plugin-barcode-scanner";
 
   let myPayload = $state("");
   let copied = $state(false);
-  let myUsername = $state("");
-  let settingUsername = $state(false);
   let registered = $state(false);
 
   let theirInput = $state("");
@@ -17,10 +15,7 @@
 
   onMount(async () => {
     const settings = await getSettings();
-    if (settings.relay_user_id) {
-      registered = true;
-      myUsername = settings.username || "";
-    }
+    registered = !!settings.relay_user_id;
     myPayload = await getPairingPayload();
   });
 
@@ -28,20 +23,6 @@
     await navigator.clipboard.writeText(myPayload);
     copied = true;
     setTimeout(() => (copied = false), 1500);
-  }
-
-  async function doSetUsername() {
-    const settings = await getSettings();
-    if (!settings.server_url || !myUsername.trim()) return;
-    settingUsername = true;
-    try {
-      await setMyUsername(settings.server_url, myUsername.trim());
-      myPayload = await getPairingPayload();
-    } catch (err) {
-      requestStatus = typeof err === "string" ? err : "Failed to set username.";
-    } finally {
-      settingUsername = false;
-    }
   }
 
   async function sendRequest(event: Event) {
@@ -101,21 +82,11 @@
 
 <div class="grid">
   <section class="panel">
-    <h2>Your identity</h2>
+    <h2>Your pairing code</h2>
     {#if !registered}
-      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a>, enter a relay URL, and save. Then come back here to set your username.</p>
+      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a>, enter a relay URL, save, then set your username. Come back here to get your pairing link.</p>
     {:else}
-      <label class="field">
-        <span class="eyebrow">your username</span>
-        <div class="username-row">
-          <input bind:value={myUsername} placeholder="e.g. alice" />
-          <button onclick={doSetUsername} disabled={settingUsername || !myUsername.trim()}>
-            {settingUsername ? "Saving…" : "Set"}
-          </button>
-        </div>
-      </label>
-
-      <p>Share your link or QR to let someone pair with you. They'll send a request — you must approve it before the connection is made.</p>
+      <p>Share this QR or link with someone. They'll send a pairing request — you must approve it in <a href="/contacts">Contacts</a>.</p>
       <div class="qr-wrap">
         {#if myPayload}
           <PairingQr value={myPayload} />
@@ -156,7 +127,5 @@
   .qr-wrap { display: flex; justify-content: center; margin-bottom: var(--space-4); }
   textarea { width: 100%; font-family: var(--font-data); font-size: var(--text-xs); color: var(--fg-muted); background: var(--ink); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-3); resize: none; margin-bottom: var(--space-3); }
   .field { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
-  .username-row { display: flex; gap: var(--space-2); }
-  .username-row input { flex: 1; }
   .status { color: var(--signal); margin-bottom: var(--space-3); max-width: 36rem; }
 </style>
