@@ -298,7 +298,11 @@ pub async fn add_contact(
         .await
         .map_err(|e| format!("failed to fetch contact keys from relay: {}", e))?;
         if !resp.status().is_success() {
-            return Err(format!("relay returned {} for account {}", resp.status(), their_relay_user_id));
+            return Err(format!(
+                "relay returned {} for account {}",
+                resp.status(),
+                their_relay_user_id
+            ));
         }
         #[derive(Deserialize)]
         struct AccountResponse {
@@ -312,11 +316,14 @@ pub async fn add_contact(
             .map_err(|e| format!("bad response from relay: {}", e))?;
 
         PublicBundle {
-            ml_dsa_pub: B64.decode(account.ml_dsa_pub)
+            ml_dsa_pub: B64
+                .decode(account.ml_dsa_pub)
                 .map_err(|_| "relay returned invalid ml_dsa_pub base64".to_string())?,
-            kem_pub: B64.decode(account.kem_pub)
+            kem_pub: B64
+                .decode(account.kem_pub)
                 .map_err(|_| "relay returned invalid kem_pub base64".to_string())?,
-            x25519_pub: B64.decode(account.x25519_pub)
+            x25519_pub: B64
+                .decode(account.x25519_pub)
                 .map_err(|_| "relay returned invalid x25519_pub base64".to_string())?
                 .try_into()
                 .map_err(|_| "relay returned x25519_pub not 32 bytes".to_string())?,
@@ -565,7 +572,13 @@ pub async fn register_with_relay(
     // Lock is dropped here — safe to await
 
     let bundle = identity.public_bundle();
-    let user_id = relay::register(&server_url, &bundle.ml_dsa_pub, &bundle.kem_pub, &bundle.x25519_pub).await?;
+    let user_id = relay::register(
+        &server_url,
+        &bundle.ml_dsa_pub,
+        &bundle.kem_pub,
+        &bundle.x25519_pub,
+    )
+    .await?;
 
     // Persist the user_id
     {

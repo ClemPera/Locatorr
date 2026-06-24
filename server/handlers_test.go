@@ -43,9 +43,9 @@ func doJSON(t *testing.T, mux http.Handler, method, path string, body any, heade
 func registerAccount(t *testing.T, mux http.Handler, mlDsaPub, kemPub, x25519Pub string) string {
 	t.Helper()
 	rec, body := doJSON(t, mux, "POST", "/v1/accounts", map[string]string{
-		"ml_dsa_pub":  mlDsaPub,
-		"kem_pub":     kemPub,
-		"x25519_pub":  x25519Pub,
+		"ml_dsa_pub": mlDsaPub,
+		"kem_pub":    kemPub,
+		"x25519_pub": x25519Pub,
 	}, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register: expected 201, got %d (%v)", rec.Code, body)

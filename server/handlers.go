@@ -77,10 +77,10 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"user_id":     acc.UserID,
-		"ml_dsa_pub":  b64encode(acc.MlDsaPub),
-		"kem_pub":     b64encode(acc.KemPub),
-		"x25519_pub":  b64encode(acc.X25519Pub),
+		"user_id":    acc.UserID,
+		"ml_dsa_pub": b64encode(acc.MlDsaPub),
+		"kem_pub":    b64encode(acc.KemPub),
+		"x25519_pub": b64encode(acc.X25519Pub),
 	})
 }
 
