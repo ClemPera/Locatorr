@@ -27,7 +27,9 @@
   <h1>Configuration</h1>
 </header>
 
-{#if !loading}
+{#if loading}
+  <p>Loading settings…</p>
+{:else}
   <form class="panel" onsubmit={save}>
     <label class="field">
       <span class="eyebrow">relay server url</span>
@@ -54,13 +56,6 @@
 {/if}
 
 <style>
-  .page-head {
-    margin-bottom: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
   .field {
     display: flex;
     flex-direction: column;

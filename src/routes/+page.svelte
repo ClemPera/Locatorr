@@ -77,13 +77,6 @@
 {/if}
 
 <style>
-  .page-head {
-    margin-bottom: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
   table {
     width: 100%;
     border-collapse: collapse;
@@ -117,9 +110,5 @@
 
   .empty-state p {
     max-width: 32rem;
-  }
-
-  .empty-state button {
-    margin-top: var(--space-2);
   }
 </style>

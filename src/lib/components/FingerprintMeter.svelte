@@ -22,7 +22,7 @@
 
   .group {
     font-family: var(--font-data);
-    font-size: var(--text-lg);
+    font-size: 1.5rem;
     letter-spacing: 0.04em;
     color: var(--fg);
     padding: var(--space-3) var(--space-4);

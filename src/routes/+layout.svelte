@@ -36,7 +36,9 @@
     <p class="rail-foot eyebrow">end-to-end encrypted</p>
   </nav>
   <main class="content">
-    {@render children()}
+    <div class="content-inner">
+      {@render children()}
+    </div>
   </main>
 </div>
 
@@ -122,7 +124,13 @@
 
   .content {
     flex: 1;
+    display: flex;
+    justify-content: center;
     padding: var(--space-6) var(--space-8);
+  }
+
+  .content-inner {
+    width: 100%;
     max-width: 60rem;
   }
 

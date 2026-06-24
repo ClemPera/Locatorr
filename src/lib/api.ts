@@ -35,6 +35,10 @@ export function listContacts(): Promise<Contact[]> {
   return invoke<Contact[]>("list_contacts");
 }
 
+export function checkContactFingerprint(contactId: string): Promise<boolean> {
+  return invoke<boolean>("check_contact_fingerprint", { contactId });
+}
+
 export function verifyContact(contactId: string): Promise<void> {
   return invoke<void>("verify_contact", { contactId });
 }

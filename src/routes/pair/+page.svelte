@@ -107,13 +107,6 @@
 {/if}
 
 <style>
-  .page-head {
-    margin-bottom: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
   .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

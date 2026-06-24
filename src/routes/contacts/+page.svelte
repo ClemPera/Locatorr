@@ -1,13 +1,35 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { contacts, refreshContacts } from "$lib/stores";
-  import { verifyContact, setContactSharing, removeContact } from "$lib/api";
+  import {
+    verifyContact,
+    setContactSharing,
+    removeContact,
+    checkContactFingerprint,
+  } from "$lib/api";
   import FingerprintMeter from "$lib/components/FingerprintMeter.svelte";
 
   let expandedId = $state<string | null>(null);
   let busyId = $state<string | null>(null);
+  let keyChanged = $state<Record<string, boolean>>({});
 
-  onMount(refreshContacts);
+  onMount(async () => {
+    await refreshContacts();
+    const current = get(contacts);
+    for (const contact of current) {
+      if (contact.verified) {
+        try {
+          const match = await checkContactFingerprint(contact.id);
+          if (!match) {
+            keyChanged[contact.id] = true;
+          }
+        } catch {
+          // If the check fails (e.g. missing contact), skip silently
+        }
+      }
+    }
+  });
 
   function toggleExpanded(id: string) {
     expandedId = expandedId === id ? null : id;
@@ -60,7 +82,7 @@
   <ul class="list">
     {#each $contacts as contact}
       <li class="panel row">
-        <button class="row-head" onclick={() => toggleExpanded(contact.id)}>
+        <button class="row-head" aria-expanded={expandedId === contact.id} onclick={() => toggleExpanded(contact.id)}>
           <div class="who">
             {#if contact.sharing}
               <span class="live-dot"></span>
@@ -70,6 +92,9 @@
             <span class="nickname">{contact.nickname}</span>
             {#if !contact.verified}
               <span class="badge">unverified</span>
+            {/if}
+            {#if contact.verified && keyChanged[contact.id]}
+              <span class="badge">key changed</span>
             {/if}
           </div>
           <span class="chevron">{expandedId === contact.id ? "−" : "+"}</span>
@@ -81,6 +106,13 @@
               <span class="eyebrow">fingerprint</span>
               <FingerprintMeter value={contact.fingerprint} />
             </div>
+
+            {#if contact.verified && keyChanged[contact.id]}
+              <p class="hint">
+                Key material has changed&mdash;{contact.nickname} may have reinstalled their app.
+                Verify the new fingerprint before trusting this connection again.
+              </p>
+            {/if}
 
             {#if !contact.verified}
               <p class="hint">
@@ -116,13 +148,6 @@
 {/if}
 
 <style>
-  .page-head {
-    margin-bottom: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
   .list {
     list-style: none;
     margin: 0;
@@ -174,7 +199,7 @@
     color: var(--amber);
     border: 1px solid var(--amber);
     border-radius: 999px;
-    padding: 0.1rem var(--space-2);
+    padding: 0.15rem var(--space-2);
   }
 
   .chevron {
@@ -214,7 +239,5 @@
     color: var(--fg-muted);
   }
 
-  .empty-state button {
-    margin-top: var(--space-2);
-  }
+
 </style>
