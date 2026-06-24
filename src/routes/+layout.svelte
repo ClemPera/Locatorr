@@ -56,10 +56,15 @@
     padding: var(--space-5) var(--space-4);
     display: flex;
     flex-direction: column;
-    position: sticky;
-    top: 0;
-    height: 100vh;
-    overflow-y: auto;
+  }
+
+  @media (min-width: 721px) {
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
   }
 
   .brand {
@@ -141,6 +146,7 @@
   @media (max-width: 720px) {
     .shell {
       flex-direction: column;
+      min-height: 100dvh;
     }
 
     .rail {
@@ -149,16 +155,36 @@
       align-items: center;
       border-right: none;
       border-bottom: 1px solid var(--line);
-      padding: var(--space-3) var(--space-4);
+      padding: var(--space-2) var(--space-3);
+      position: static;
+      height: auto;
+      overflow: visible;
+      flex-shrink: 0;
     }
 
     .brand {
       margin-bottom: 0;
+      gap: var(--space-1);
+    }
+
+    .brand-name {
+      font-size: var(--text-sm);
     }
 
     ul {
       flex-direction: row;
       margin-left: auto;
+      gap: 0;
+    }
+
+    a {
+      padding: var(--space-2) var(--space-2);
+      font-size: var(--text-xs);
+      gap: var(--space-1);
+    }
+
+    .hint {
+      display: none;
     }
 
     .rail-foot {
@@ -166,7 +192,7 @@
     }
 
     .content {
-      padding: var(--space-5);
+      padding: var(--space-3);
     }
   }
 </style>
