@@ -103,7 +103,7 @@ npm run build     # production build (adapter-static)
 
 ## Known limitations
 
-- **Private keys are plaintext in SQLite.** The design calls for OS keychain encryption via Tauri's secure storage. Currently stored as BLOBs. Tracked alongside the same gap in Nooto.
+- **Identity keys use plugin store, not OS keychain.** Private keys are stored in `tauri-plugin-store` (`identity.json`), protected by OS app-sandbox file permissions. True OS-keychain encryption needs `tauri-plugin-stronghold` — tracked alongside the same gap in Nooto.
 - **No barcode scanner plugin.** QR generation works, but scanning a contact's QR code isn't implemented yet. The paste-based flow (copy/paste the base64 payload) is the primary path.
 - **No geolocation plugin.** Location sharing requires the user to manually enter coordinates. Adding `tauri-plugin-geolocation` for foreground GPS fixes is the next step.
 - **No background location capture.** The design doc's section 10 outlines the options but no implementation exists yet.
