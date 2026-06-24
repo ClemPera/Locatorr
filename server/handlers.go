@@ -43,6 +43,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		MlDsaPub  string `json:"ml_dsa_pub"`
 		KemPub    string `json:"kem_pub"`
 		X25519Pub string `json:"x25519_pub"`
+		Username  string `json:"username"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -55,10 +56,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "ml_dsa_pub, kem_pub, and x25519_pub are required, base64-encoded")
 		return
 	}
+	if req.Username != "" && s.store.LookupByUsername(req.Username) != nil {
+		writeErr(w, http.StatusConflict, "username already taken")
+		return
+	}
 
 	userID := randomID()
 	s.store.PutAccount(Account{
 		UserID:    userID,
+		Username:  req.Username,
 		MlDsaPub:  mlDsaPub,
 		KemPub:    kemPub,
 		X25519Pub: x25519Pub,
@@ -78,6 +84,28 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"user_id":    acc.UserID,
+		"username":   acc.Username,
+		"ml_dsa_pub": b64encode(acc.MlDsaPub),
+		"kem_pub":    b64encode(acc.KemPub),
+		"x25519_pub": b64encode(acc.X25519Pub),
+	})
+}
+
+// GET /v1/accounts/lookup?username=xxx
+func (s *Server) handleLookupByUsername(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		writeErr(w, http.StatusBadRequest, "missing username")
+		return
+	}
+	acc := s.store.LookupByUsername(username)
+	if acc == nil {
+		writeErr(w, http.StatusNotFound, "no such user")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"user_id":    acc.UserID,
+		"username":   acc.Username,
 		"ml_dsa_pub": b64encode(acc.MlDsaPub),
 		"kem_pub":    b64encode(acc.KemPub),
 		"x25519_pub": b64encode(acc.X25519Pub),
@@ -332,6 +360,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/accounts", s.handleRegister)
 	mux.HandleFunc("GET /v1/accounts/{id}", s.handleGetAccount)
+	mux.HandleFunc("GET /v1/accounts/lookup", s.handleLookupByUsername)
 	mux.HandleFunc("POST /v1/auth/challenge", s.handleChallenge)
 	mux.HandleFunc("POST /v1/auth/verify", s.handleVerify)
 	mux.HandleFunc("PUT /v1/locations/{id}", s.authMiddleware(s.handlePutLocation))

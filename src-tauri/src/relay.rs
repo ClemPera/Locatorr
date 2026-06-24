@@ -22,6 +22,7 @@ struct RegisterRequest {
     ml_dsa_pub: String,
     kem_pub: String,
     x25519_pub: String,
+    username: String,
 }
 
 #[derive(Deserialize)]
@@ -91,6 +92,7 @@ pub async fn register(
     ml_dsa_pub: &[u8],
     kem_pub: &[u8],
     x25519_pub: &[u8],
+    username: &str,
 ) -> Result<String, String> {
     let resp = client()
         .post(format!("{}/v1/accounts", server_url.trim_end_matches('/')))
@@ -98,6 +100,7 @@ pub async fn register(
             ml_dsa_pub: B64.encode(ml_dsa_pub),
             kem_pub: B64.encode(kem_pub),
             x25519_pub: B64.encode(x25519_pub),
+            username: username.to_string(),
         })
         .send()
         .await
@@ -337,4 +340,29 @@ pub async fn accept_pairing_request(
         .await
         .map_err(|e| format!("bad response: {}", e))?;
     Ok(body.from)
+}
+
+/// Look up a user by username. Returns the user_id if found.
+pub async fn lookup_username(server_url: &str, username: &str) -> Result<String, String> {
+    let resp = client()
+        .get(format!(
+            "{}/v1/accounts/lookup?username={}",
+            server_url.trim_end_matches('/'),
+            username
+        ))
+        .send()
+        .await
+        .map_err(|e| format!("lookup failed: {}", e))?;
+    if resp.status() == 404 {
+        return Err("user not found".to_string());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("lookup: server returned {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct R {
+        user_id: String,
+    }
+    let body: R = resp.json().await.map_err(|e| format!("bad response: {}", e))?;
+    Ok(body.user_id)
 }

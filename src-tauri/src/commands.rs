@@ -161,15 +161,13 @@ fn load_or_create_identity(conn: &Connection, app: &tauri::AppHandle) -> Result<
     Ok(identity)
 }
 
-fn encode_pairing_payload(_bundle: &PublicBundle, relay_user_id: &str) -> String {
-    // Always produce a short link. If registered, use the relay user_id.
-    // If not registered, use a local-only marker — the full key payload
-    // is still in the textarea below the QR for copy/paste.
+fn encode_pairing_payload(_bundle: &PublicBundle, relay_user_id: &str, username: &str) -> String {
+    if !username.is_empty() {
+        return format!("locatorr://pair?u={}", username);
+    }
     if !relay_user_id.is_empty() {
         return format!("locatorr://pair?uid={}", relay_user_id);
     }
-    // Not registered: generate a compact local identifier.
-    // The recipient must use the text-based payload below the QR.
     "locatorr://pair?local=1".to_string()
 }
 
@@ -251,8 +249,17 @@ pub fn get_pairing_payload(
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    let username: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'username'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
     Ok(PublicBundleDto {
-        pairing_payload: encode_pairing_payload(&identity.public_bundle(), &relay_user_id),
+        pairing_payload: encode_pairing_payload(&identity.public_bundle(), &relay_user_id, &username),
     })
 }
 
@@ -359,6 +366,83 @@ pub async fn add_contact(
         sharing: false,
         created_at,
     })
+}
+
+/// Look up a username on the relay and send a pairing request.
+#[tauri::command]
+pub async fn search_and_request(
+    state: tauri::State<'_, AppState>,
+    server_url: String,
+    username: String,
+) -> Result<String, String> {
+    let token: String = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = 'relay_token'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+    if token.is_empty() {
+        return Err("Not authenticated with relay.".to_string());
+    }
+    let user_id = relay::lookup_username(&server_url, &username).await?;
+    relay::request_pairing(&server_url, &token, &user_id).await?;
+    Ok(format!("Request sent to {}", username))
+}
+
+/// Set the username for this account on the relay and locally.
+#[tauri::command]
+pub async fn set_my_username(
+    state: tauri::State<'_, AppState>,
+    server_url: String,
+    username: String,
+) -> Result<(), String> {
+    let (token, my_id) = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        let token: String = conn
+            .query_row("SELECT value FROM settings WHERE key='relay_token'", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let my_id: String = conn
+            .query_row("SELECT value FROM settings WHERE key='relay_user_id'", [], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        (token, my_id)
+    };
+
+    if token.is_empty() || my_id.is_empty() {
+        return Err("Not authenticated with relay.".to_string());
+    }
+
+    let resp = reqwest::Client::new()
+        .put(format!(
+            "{}/v1/accounts/{}/username",
+            server_url.trim_end_matches('/'),
+            my_id
+        ))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&serde_json::json!({"username": username}))
+        .send()
+        .await
+        .map_err(|e| format!("set username failed: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(format!("relay returned {}", resp.status()));
+    }
+
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('username', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![username],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Decode a pairing payload without storing anything. Returns the fingerprint
@@ -651,6 +735,7 @@ pub async fn register_with_relay(
         &bundle.ml_dsa_pub,
         &bundle.kem_pub,
         &bundle.x25519_pub,
+        "",
     )
     .await?;
 

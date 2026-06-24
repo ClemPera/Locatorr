@@ -42,6 +42,8 @@ pub fn run() {
             commands::send_pairing_request,
             commands::list_pairing_requests,
             commands::accept_pairing_request,
+            commands::search_and_request,
+            commands::set_my_username,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

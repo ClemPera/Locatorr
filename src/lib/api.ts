@@ -14,6 +14,7 @@ export interface Settings {
   server_url: string;
   poll_interval_secs: number;
   relay_user_id?: string;
+  username?: string;
 }
 
 export interface ReceivedLocation {
@@ -119,4 +120,12 @@ export function acceptPairingRequest(
   nickname: string,
 ): Promise<Contact> {
   return invoke<Contact>("accept_pairing_request", { serverUrl, requestId, nickname });
+}
+
+export function searchAndRequest(serverUrl: string, username: string): Promise<string> {
+  return invoke<string>("search_and_request", { serverUrl, username });
+}
+
+export function setMyUsername(serverUrl: string, username: string): Promise<void> {
+  return invoke<void>("set_my_username", { serverUrl, username });
 }

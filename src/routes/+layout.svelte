@@ -56,6 +56,10 @@
     padding: var(--space-5) var(--space-4);
     display: flex;
     flex-direction: column;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
   }
 
   .brand {

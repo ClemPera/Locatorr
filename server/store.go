@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 // Account holds only public key material. The server never sees a private key.
 type Account struct {
 	UserID    string
+	Username  string
 	MlDsaPub  []byte
 	KemPub    []byte
 	X25519Pub []byte // 32-byte X25519 public key for hybrid key agreement
@@ -61,6 +63,7 @@ type Store struct {
 const pgSchema = `
 CREATE TABLE IF NOT EXISTS accounts (
 	user_id    TEXT PRIMARY KEY,
+	username   TEXT UNIQUE,
 	ml_dsa_pub BYTEA NOT NULL,
 	kem_pub    BYTEA NOT NULL,
 	x25519_pub BYTEA NOT NULL,
@@ -143,10 +146,10 @@ func (s *Store) PutAccount(a Account) {
 	s.accounts[a.UserID] = a
 	if s.pool != nil {
 		_, _ = s.pool.Exec(context.Background(),
-			`INSERT INTO accounts (user_id, ml_dsa_pub, kem_pub, x25519_pub, created_at)
-			 VALUES ($1, $2, $3, $4, $5)
-			 ON CONFLICT (user_id) DO UPDATE SET ml_dsa_pub = $2, kem_pub = $3, x25519_pub = $4`,
-			a.UserID, a.MlDsaPub, a.KemPub, a.X25519Pub, a.CreatedAt,
+			`INSERT INTO accounts (user_id, username, ml_dsa_pub, kem_pub, x25519_pub, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6)
+			 ON CONFLICT (user_id) DO UPDATE SET username = $2, ml_dsa_pub = $3, kem_pub = $4, x25519_pub = $5`,
+			a.UserID, a.Username, a.MlDsaPub, a.KemPub, a.X25519Pub, a.CreatedAt,
 		)
 	}
 }
@@ -206,6 +209,36 @@ func (s *Store) DeleteRelay(from, to string) {
 			"DELETE FROM relay WHERE from_user = $1 AND to_user = $2", from, to,
 		)
 	}
+}
+
+// LookupByUsername finds an account by username. Returns nil if not found.
+func (s *Store) LookupByUsername(username string) *Account {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.accounts {
+		if a.Username == username {
+			return &a
+		}
+	}
+	return nil
+}
+
+// SetUsername sets the username for an account.
+func (s *Store) SetUsername(userID, username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.accounts[userID]
+	if !ok {
+		return false
+	}
+	a.Username = username
+	s.accounts[userID] = a
+	if s.pool != nil {
+		_, _ = s.pool.Exec(context.Background(),
+			"UPDATE accounts SET username=$1 WHERE user_id=$2", username, userID,
+		)
+	}
+	return true
 }
 
 func (s *Store) InboxFor(userID string) []RelayEntry {
@@ -274,15 +307,19 @@ func (s *Store) loadAll(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	rows, err := s.pool.Query(ctx, "SELECT user_id, ml_dsa_pub, kem_pub, x25519_pub, created_at FROM accounts")
+	rows, err := s.pool.Query(ctx, "SELECT user_id, username, ml_dsa_pub, kem_pub, x25519_pub, created_at FROM accounts")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var a Account
-		if err := rows.Scan(&a.UserID, &a.MlDsaPub, &a.KemPub, &a.X25519Pub, &a.CreatedAt); err != nil {
+		var uname sql.NullString
+		if err := rows.Scan(&a.UserID, &uname, &a.MlDsaPub, &a.KemPub, &a.X25519Pub, &a.CreatedAt); err != nil {
 			return err
+		}
+		if uname.Valid {
+			a.Username = uname.String
 		}
 		s.accounts[a.UserID] = a
 	}

@@ -1,18 +1,26 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPairingPayload, sendPairingRequest, getSettings } from "$lib/api";
+  import { getPairingPayload, getSettings, setMyUsername, searchAndRequest, sendPairingRequest } from "$lib/api";
   import PairingQr from "$lib/components/PairingQr.svelte";
   import { scan } from "@tauri-apps/plugin-barcode-scanner";
 
   let myPayload = $state("");
   let copied = $state(false);
+  let myUsername = $state("");
+  let settingUsername = $state(false);
+  let registered = $state(false);
 
-  let theirPayload = $state("");
+  let theirInput = $state("");
   let requestStatus = $state("");
   let sending = $state(false);
   let scanning = $state(false);
 
   onMount(async () => {
+    const settings = await getSettings();
+    if (settings.relay_user_id) {
+      registered = true;
+      myUsername = settings.username || "";
+    }
     myPayload = await getPairingPayload();
   });
 
@@ -22,30 +30,50 @@
     setTimeout(() => (copied = false), 1500);
   }
 
-  function extractUserId(payload: string): string | null {
-    // locatorr://pair?uid=<user_id>
-    const m = payload.match(/[?&]uid=([^&]+)/);
-    return m ? m[1] : null;
+  async function doSetUsername() {
+    const settings = await getSettings();
+    if (!settings.server_url || !myUsername.trim()) return;
+    settingUsername = true;
+    try {
+      await setMyUsername(settings.server_url, myUsername.trim());
+      myPayload = await getPairingPayload();
+    } catch (err) {
+      requestStatus = typeof err === "string" ? err : "Failed to set username.";
+    } finally {
+      settingUsername = false;
+    }
   }
 
   async function sendRequest(event: Event) {
     event.preventDefault();
     requestStatus = "";
-    const uid = extractUserId(theirPayload.trim());
-    if (!uid) {
-      requestStatus = "Invalid pairing code — could not find a user ID.";
-      return;
-    }
+    const input = theirInput.trim();
+    if (!input) return;
+
     const settings = await getSettings();
     if (!settings.server_url) {
       requestStatus = "No relay server configured. Go to Settings first.";
       return;
     }
+
     sending = true;
     try {
-      await sendPairingRequest(settings.server_url, uid);
-      requestStatus = "Pairing request sent! They'll need to approve it before the connection is established.";
-      theirPayload = "";
+      // If it looks like a link, extract uid
+      if (input.includes("://") || input.includes("uid=")) {
+        const m = input.match(/[?&]uid=([^&]+)/);
+        if (m) {
+          await sendPairingRequest(settings.server_url, m[1]);
+          requestStatus = "Pairing request sent!";
+          theirInput = "";
+        } else {
+          requestStatus = "Invalid link format.";
+        }
+      } else {
+        // Assume it's a username — do a relay lookup
+        await searchAndRequest(settings.server_url, input);
+        requestStatus = `Pairing request sent to ${input}!`;
+        theirInput = "";
+      }
     } catch (err) {
       requestStatus = typeof err === "string" ? err : "Failed to send request.";
     } finally {
@@ -57,9 +85,7 @@
     scanning = true;
     try {
       const result = await scan({ windowed: false });
-      if (result.content) {
-        theirPayload = result.content;
-      }
+      if (result.content) theirInput = result.content;
     } catch {
       // user cancelled
     } finally {
@@ -75,36 +101,46 @@
 
 <div class="grid">
   <section class="panel">
-    <h2>Your pairing code</h2>
-    {#if myPayload.includes("local=1")}
-      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a> and save a relay URL — your QR will link to your account.</p>
+    <h2>Your identity</h2>
+    {#if !registered}
+      <p>You haven't registered with a relay yet. Go to <a href="/settings">Settings</a>, enter a relay URL, and save. Then come back here to set your username.</p>
     {:else}
-      <p>Show this QR to someone in person, or copy the link below to send remotely.</p>
+      <label class="field">
+        <span class="eyebrow">your username</span>
+        <div class="username-row">
+          <input bind:value={myUsername} placeholder="e.g. alice" />
+          <button onclick={doSetUsername} disabled={settingUsername || !myUsername.trim()}>
+            {settingUsername ? "Saving…" : "Set"}
+          </button>
+        </div>
+      </label>
+
+      <p>Share your link or QR to let someone pair with you. They'll send a request — you must approve it before the connection is made.</p>
+      <div class="qr-wrap">
+        {#if myPayload}
+          <PairingQr value={myPayload} />
+        {/if}
+      </div>
+      <textarea class="data" readonly rows="3" value={myPayload}></textarea>
+      <button onclick={copyPayload}>{copied ? "Copied" : "Copy code"}</button>
     {/if}
-    <div class="qr-wrap">
-      {#if myPayload}
-        <PairingQr value={myPayload} />
-      {/if}
-    </div>
-    <textarea class="data" readonly rows="3" value={myPayload}></textarea>
-    <button onclick={copyPayload}>{copied ? "Copied" : "Copy code"}</button>
   </section>
 
   <section class="panel">
     <h2>Add someone</h2>
-    <p>Scan their QR or paste their link. This sends a pairing request — they must approve before the connection is made.</p>
+    <p>Enter their username, paste their link, or scan their QR. A pairing request will be sent — they must approve first.</p>
     <form onsubmit={sendRequest}>
       <label class="field">
-        <span class="eyebrow">their code</span>
-        <textarea class="data" rows="3" bind:value={theirPayload} placeholder="Paste pairing link here"></textarea>
+        <span class="eyebrow">username, link, or QR</span>
+        <textarea class="data" rows="2" bind:value={theirInput} placeholder="username or locatorr://pair?uid=..."></textarea>
         <button type="button" onclick={scanQR} disabled={scanning}>
-          {scanning ? "Scanning…" : "Scan QR code"}
+          {scanning ? "Scanning…" : "Scan QR"}
         </button>
       </label>
       {#if requestStatus}
         <p class="status">{requestStatus}</p>
       {/if}
-      <button class="primary" type="submit" disabled={sending || !theirPayload.trim()}>
+      <button class="primary" type="submit" disabled={sending || !theirInput.trim()}>
         {sending ? "Sending…" : "Send pairing request"}
       </button>
     </form>
@@ -112,62 +148,15 @@
 </div>
 
 <style>
-  .page-head {
-    margin-bottom: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-  }
-
-  .grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-5);
-  }
-
-  @media (max-width: 900px) {
-    .grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  h2 {
-    margin-bottom: var(--space-2);
-  }
-
-  .panel p {
-    margin-bottom: var(--space-4);
-  }
-
-  .qr-wrap {
-    display: flex;
-    justify-content: center;
-    margin-bottom: var(--space-4);
-  }
-
-  textarea {
-    width: 100%;
-    font-family: var(--font-data);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    background: var(--ink);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    padding: var(--space-3);
-    resize: none;
-    margin-bottom: var(--space-3);
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    margin-bottom: var(--space-3);
-  }
-
-  .status {
-    color: var(--signal);
-    margin-bottom: var(--space-3);
-    max-width: 36rem;
-  }
+  .page-head { margin-bottom: var(--space-5); display: flex; flex-direction: column; gap: var(--space-1); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-5); }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  h2 { margin-bottom: var(--space-2); }
+  .panel p { margin-bottom: var(--space-4); }
+  .qr-wrap { display: flex; justify-content: center; margin-bottom: var(--space-4); }
+  textarea { width: 100%; font-family: var(--font-data); font-size: var(--text-xs); color: var(--fg-muted); background: var(--ink); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--space-3); resize: none; margin-bottom: var(--space-3); }
+  .field { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
+  .username-row { display: flex; gap: var(--space-2); }
+  .username-row input { flex: 1; }
+  .status { color: var(--signal); margin-bottom: var(--space-3); max-width: 36rem; }
 </style>
