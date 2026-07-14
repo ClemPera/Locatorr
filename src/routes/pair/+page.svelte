@@ -32,7 +32,9 @@
     if (!input) return;
 
     const settings = await getSettings();
+    console.log(settings);
     if (!settings.server_url) {
+      console.log("no srv url");
       requestStatus = "No relay server configured. Go to Settings first.";
       return;
     }
