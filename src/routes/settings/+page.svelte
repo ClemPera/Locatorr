@@ -47,6 +47,8 @@
       relayStatus = "Registering with relay…";
       try {
         const uid = await registerWithRelay(url);
+        relayStatus = "Authenticating…";
+        await authenticateWithRelay(url);
         relayStatus = `Connected ✓ — your account: ${uid}`;
       } catch (err) {
         relayStatus = `Could not reach relay at ${url}: ${err}`;
