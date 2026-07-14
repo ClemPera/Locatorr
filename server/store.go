@@ -118,10 +118,11 @@ func OpenStorePG(ctx context.Context, connStr string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		pool:       pool,
-		accounts:   make(map[string]Account),
-		challenges: make(map[string]Challenge),
-		relay:      make(map[string]RelayEntry),
+		pool:            pool,
+		accounts:        make(map[string]Account),
+		challenges:      make(map[string]Challenge),
+		relay:           make(map[string]RelayEntry),
+		pairingRequests: make(map[string]PairingRequest),
 	}
 	if err := s.loadAll(ctx); err != nil {
 		pool.Close()

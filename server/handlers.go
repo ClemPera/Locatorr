@@ -390,8 +390,7 @@ func main() {
 		}
 		log.Println("using PostgreSQL store")
 	} else {
-		store = NewStore()
-		log.Println("DATABASE_URL not set — using in-memory store")
+		panic("DATABASE_URL not set")
 	}
 
 	secret := make([]byte, 32)
