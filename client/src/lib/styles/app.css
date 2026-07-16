@@ -1,0 +1,241 @@
+/*
+  Design direction: a chart table, not a dashboard. Locatorr's whole job is showing exactly
+  where someone is, plainly, the way a paper chart or an old radar readout would, not a glossy
+  consumer-app map. Dark, ink-on-paper-at-night palette; a single desaturated signal color for
+  "live"; numbers (coordinates, timestamps, the pairing fingerprint) always in a mono face,
+  reading like an instrument digit wheel rather than UI chrome.
+
+  No web fonts fetched at runtime: both faces are bundled via @fontsource (self-hosted), partly
+  for the obvious reason (offline desktop app), partly because a location-privacy tool making
+  silent calls to a font CDN would be a strange thing to ship.
+*/
+
+:root {
+  /* color */
+  --ink: #10161d;
+  --panel: #1a232d;
+  --panel-raised: #212c38;
+  --line: #2c3a47;
+  --fg: #e7ecf0;
+  --fg-muted: #8a98a6;
+  --fg-faint: #6f7c88;
+  --signal: #4fb3a9;
+  --signal-dim: #335c57;
+  --amber: #d99a4e;
+  --danger: #d47a75;
+
+  /* type */
+  --font-ui: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.75rem;
+
+  /* space */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  --radius: 6px;
+  --nav-w: 15.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overscroll-behavior: none;
+  background: var(--ink);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  /* Prevent content from drawing behind the status bar on Android */
+  padding-top: env(safe-area-inset-top);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+h1 {
+  font-size: var(--text-xl);
+}
+h2 {
+  font-size: var(--text-lg);
+}
+
+p {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.data,
+.mono {
+  font-family: var(--font-data);
+  font-feature-settings: "tnum";
+}
+
+button {
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+button:hover {
+  border-color: var(--fg-faint);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+button.primary {
+  background: var(--signal-dim);
+  border-color: var(--signal);
+  color: var(--fg);
+}
+
+button.primary:hover {
+  background: var(--signal);
+  color: var(--ink);
+}
+
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+select {
+  font-family: var(--font-data);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+}
+
+input:focus-visible {
+  border-color: var(--signal);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-5);
+}
+
+.eyebrow {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--space-4) 0;
+}
+
+.live-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: 0 0 0 3px var(--signal-dim);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-5);
+  color: var(--fg-muted);
+}
+
+.empty-state button {
+  margin-top: var(--space-2);
+}
+
+.page-head {
+  margin-bottom: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+button.danger:hover {
+  background: var(--danger);
+  color: var(--fg);
+  border-color: var(--danger);
+}
+
+table td:hover,
+table tr:hover td {
+  background: var(--panel-raised);
+}
+
+/* Native checkbox in dark theme */
+input[type="checkbox"] {
+  accent-color: var(--signal);
+}
+
+/* Let tables scroll horizontally on narrow viewports */
+.panel:has(table) {
+  overflow-x: auto;
+}
+
+
