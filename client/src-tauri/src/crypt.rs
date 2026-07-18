@@ -1,19 +1,21 @@
-use std::collections::HashMap;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce as AesNonce,
 };
-
 use core::convert::TryFrom;
 use hkdf::Hkdf;
 use ml_dsa::{MlDsa65, Signer, SignatureEncoding, Verifier};
 use ml_kem::ml_kem_768::{Ciphertext as KemCiphertext, DecapsulationKey, EncapsulationKey};
 use ml_kem::{Decapsulate, Encapsulate};
-
 #[cfg(test)]
 use ml_kem::Generate as KemGenerate;
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+
+// ============================================================================
+// PHASE 1: PAIRING & BOOTSTRAPPING (unchanged from the original design)
+// ============================================================================
 
 pub struct RendezvousInvitation {
     pub rendezvous_id: String,
@@ -73,6 +75,10 @@ pub fn compute_safety_fingerprint(bundle_a: &[u8], bundle_b: &[u8]) -> [u8; 12] 
     fingerprint
 }
 
+// ============================================================================
+// PHASE 2 & 3: HYBRID LOCATION UPDATE, WITH SENDER-BOUND SIG + REPLAY GUARD
+// ============================================================================
+
 pub struct LocationUpdatePackage {
     pub sender_id: String,
     /// Per-sender monotonic counter. This, not `timestamp`, is what stops replay.
@@ -112,47 +118,92 @@ fn build_signed_message(
     msg
 }
 
-/// Per-device counter Alice advances on every send. Must be durably
-/// persisted before the package goes out on the wire: incrementing only in
-/// memory means a crash/restart can reuse a sequence number, which a
-/// correctly-working `ReplayGuard` on Bob's side would then legitimately
-/// reject as a replay.
-pub struct SequenceCounter {
-    next: u64,
+/// Alice's per-device sequence counter, durably persisted to a SQLite file.
+/// `synchronous = FULL` means every `reserve_next` call fsyncs before
+/// returning: the number handed back is on disk before the caller can use
+/// it, so it can never be handed back again after a crash. That fsync costs
+/// real latency (single-digit milliseconds on a normal SSD, more on
+/// spinning disk or a cheap phone eMMC) -- that's the price of the
+/// guarantee, not a bug. Don't point this at ":memory:" outside tests: an
+/// in-memory DB gives you back exactly the crash-unsafe behavior this
+/// replaces.
+pub struct SequenceStore {
+    conn: Connection,
 }
 
-impl SequenceCounter {
-    pub fn new(starting_at: u64) -> Self {
-        Self { next: starting_at }
+impl SequenceStore {
+    pub fn open(path: &str) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sequence_counter (
+                device_id TEXT PRIMARY KEY,
+                next_seq  INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        Ok(Self { conn })
     }
 
-    pub fn take(&mut self) -> u64 {
-        let seq = self.next;
-        self.next += 1;
-        seq
+    /// Atomically reserves and durably commits the next sequence number for
+    /// `device_id`, then returns it. One SQL statement: no separate
+    /// read-then-write race to get wrong.
+    pub fn reserve_next(&self, device_id: &str) -> rusqlite::Result<u64> {
+        let new_next: i64 = self.conn.query_row(
+            "INSERT INTO sequence_counter (device_id, next_seq) VALUES (?1, 1)
+             ON CONFLICT(device_id) DO UPDATE SET next_seq = next_seq + 1
+             RETURNING next_seq",
+            params![device_id],
+            |row| row.get(0),
+        )?;
+        Ok(new_next as u64 - 1)
     }
 }
 
-/// Tracks the last accepted sequence number per sender. In production this
-/// is a DB row (sender_id -> last_sequence), not an in-memory map, for the
-/// same durability reason as `SequenceCounter`.
-#[derive(Default)]
+/// Bob's per-sender replay guard, durably persisted to a SQLite file for the
+/// same reason as `SequenceStore`: an in-memory map forgets everything on
+/// restart, which un-does the replay protection the first time the app
+/// restarts or crashes.
 pub struct ReplayGuard {
-    last_seen: HashMap<String, u64>,
+    conn: Connection,
 }
 
 impl ReplayGuard {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn open(path: &str) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS replay_guard (
+                sender_id TEXT PRIMARY KEY,
+                last_seq  INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        Ok(Self { conn })
     }
 
-    fn check_and_advance(&mut self, sender_id: &str, sequence: u64) -> Result<(), &'static str> {
-        match self.last_seen.get(sender_id) {
-            Some(&last) if sequence <= last => Err("replayed or out-of-order sequence number"),
-            _ => {
-                self.last_seen.insert(sender_id.to_string(), sequence);
-                Ok(())
-            }
+    /// Single atomic statement: insert if this sender is new, otherwise
+    /// only update if the incoming sequence is strictly greater than what's
+    /// stored. If the WHERE clause fails (replay or reorder), no row is
+    /// touched and RETURNING yields nothing -- verified this actually
+    /// happens rather than assuming it from the SQLite docs.
+    fn check_and_advance(&self, sender_id: &str, sequence: u64) -> Result<(), &'static str> {
+        let accepted: Option<i64> = self
+            .conn
+            .query_row(
+                "INSERT INTO replay_guard (sender_id, last_seq) VALUES (?1, ?2)
+                 ON CONFLICT(sender_id) DO UPDATE SET last_seq = excluded.last_seq
+                 WHERE excluded.last_seq > replay_guard.last_seq
+                 RETURNING last_seq",
+                params![sender_id, sequence as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| "replay guard storage error")?;
+
+        match accepted {
+            Some(_) => Ok(()),
+            None => Err("replayed or out-of-order sequence number"),
         }
     }
 }
@@ -242,7 +293,7 @@ pub fn receive_location_update(
     bob_kem_priv: &DecapsulationKey,
     bob_x25519_priv: &StaticSecret,
     alice_mldsa_pub: &ml_dsa::VerifyingKey<MlDsa65>,
-    replay_guard: &mut ReplayGuard,
+    replay_guard: &ReplayGuard,
 ) -> Result<Vec<u8>, &'static str> {
     // 1. Verify the signature over sender_id + sequence + handshake metadata.
     let msg_to_verify = build_signed_message(
@@ -318,8 +369,11 @@ mod tests {
         let alice_sk = ml_dsa::SigningKey::<MlDsa65>::generate_from_rng(&mut rng);
         let alice_vk = alice_sk.verifying_key();
 
-        let mut seq = SequenceCounter::new(0);
-        let mut guard = ReplayGuard::new();
+        // ":memory:" is fine here, the test doesn't care about surviving a
+        // restart -- see `sequence_and_replay_state_survive_a_restart` below
+        // for that guarantee.
+        let seq_store = SequenceStore::open(":memory:").unwrap();
+        let guard = ReplayGuard::open(":memory:").unwrap();
 
         let payload = b"lat=45.90,lon=6.13";
         let package = send_location_update(
@@ -327,19 +381,19 @@ mod tests {
             bob_x25519_pub.as_bytes(),
             &alice_sk,
             "alice".to_string(),
-            seq.take(),
+            seq_store.reserve_next("alice-phone").unwrap(),
             payload,
             1_752_000_000,
         );
 
         let decrypted =
-            receive_location_update(&package, &bob_kem_dk, &bob_x25519_priv, &alice_vk, &mut guard)
+            receive_location_update(&package, &bob_kem_dk, &bob_x25519_priv, &alice_vk, &guard)
                 .expect("first delivery should succeed");
         assert_eq!(decrypted, payload);
 
         // Bob (or the server) replays the exact same package again.
         let replay_result =
-            receive_location_update(&package, &bob_kem_dk, &bob_x25519_priv, &alice_vk, &mut guard);
+            receive_location_update(&package, &bob_kem_dk, &bob_x25519_priv, &alice_vk, &guard);
         assert!(replay_result.is_err(), "replayed package must be rejected");
 
         // A genuinely new update with the next sequence number still works.
@@ -348,7 +402,7 @@ mod tests {
             bob_x25519_pub.as_bytes(),
             &alice_sk,
             "alice".to_string(),
-            seq.take(),
+            seq_store.reserve_next("alice-phone").unwrap(),
             b"lat=45.91,lon=6.14",
             1_752_000_030,
         );
@@ -357,8 +411,57 @@ mod tests {
             &bob_kem_dk,
             &bob_x25519_priv,
             &alice_vk,
-            &mut guard
+            &guard
         )
         .is_ok());
+    }
+
+    /// This is the test that actually justifies the SQLite rewrite: proves
+    /// the sequence counter and replay guard both keep their state across a
+    /// simulated process restart, instead of just asserting it in a comment.
+    #[test]
+    fn sequence_and_replay_state_survive_a_restart() {
+        let seq_path = std::env::temp_dir().join(format!(
+            "seq_restart_test_{}_{}.sqlite3",
+            std::process::id(),
+            line!()
+        ));
+        let guard_path = std::env::temp_dir().join(format!(
+            "guard_restart_test_{}_{}.sqlite3",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&seq_path);
+        let _ = std::fs::remove_file(&guard_path);
+
+        // "Run 1": reserve two sequence numbers, accept the second one.
+        {
+            let seq_store = SequenceStore::open(seq_path.to_str().unwrap()).unwrap();
+            let guard = ReplayGuard::open(guard_path.to_str().unwrap()).unwrap();
+            assert_eq!(seq_store.reserve_next("alice-phone").unwrap(), 0);
+            assert_eq!(seq_store.reserve_next("alice-phone").unwrap(), 1);
+            assert!(guard.check_and_advance("alice", 1).is_ok());
+            // both `seq_store` and `guard` are dropped here, simulating the
+            // process dying
+        }
+
+        // "Run 2": reopen the same files, simulating a restart.
+        {
+            let seq_store = SequenceStore::open(seq_path.to_str().unwrap()).unwrap();
+            let guard = ReplayGuard::open(guard_path.to_str().unwrap()).unwrap();
+
+            // Counter picked up where it left off instead of resetting to 0.
+            assert_eq!(seq_store.reserve_next("alice-phone").unwrap(), 2);
+
+            // Guard still remembers sequence 1 was already accepted.
+            assert!(
+                guard.check_and_advance("alice", 1).is_err(),
+                "replay guard must not forget state across a restart"
+            );
+            assert!(guard.check_and_advance("alice", 2).is_ok());
+        }
+
+        let _ = std::fs::remove_file(&seq_path);
+        let _ = std::fs::remove_file(&guard_path);
     }
 }
