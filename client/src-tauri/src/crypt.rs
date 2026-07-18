@@ -19,6 +19,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 // ============================================================================
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RendezvousInvitation {
     pub rendezvous_id: String,
     pub x_temp_pub: [u8; 32],
