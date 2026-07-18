@@ -2,6 +2,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce as AesNonce,
 };
+use serde::{Serialize, Deserialize};
 use core::convert::TryFrom;
 use hkdf::Hkdf;
 use ml_dsa::{MlDsa65, Signer, SignatureEncoding, Verifier};
@@ -17,6 +18,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 // PHASE 1: PAIRING & BOOTSTRAPPING (unchanged from the original design)
 // ============================================================================
 
+#[derive(Serialize, Deserialize)]
 pub struct RendezvousInvitation {
     pub rendezvous_id: String,
     pub x_temp_pub: [u8; 32],
