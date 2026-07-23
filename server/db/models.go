@@ -5,11 +5,29 @@
 package db
 
 import (
-	"time"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type Inbox struct {
+	ID        int64
+	UserID    string
+	Payload   []byte
+	CreatedAt pgtype.Timestamp
+}
+
+type RendezvousBundle struct {
+	RoomID string
+	Role   string
+	Bundle []byte
+}
+
+type RendezvousPubkey struct {
+	RoomID string
+	Role   string
+	Pubkey []byte
+}
 
 type RendezvousRoom struct {
 	ID        string
-	CreatedBy string
-	ExpiresAt time.Time
+	ExpiresAt pgtype.Timestamp
 }

@@ -7,22 +7,176 @@ package db
 
 import (
 	"context"
-	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertRoom = `-- name: InsertRoom :exec
-insert into rendezvous_rooms
-    (id, created_by, expires_at)
-values($1,$2,$3)
+const getAndDeleteInbox = `-- name: GetAndDeleteInbox :many
+DELETE FROM inbox
+WHERE user_id = $1
+RETURNING id, user_id, payload, created_at
+`
+
+func (q *Queries) GetAndDeleteInbox(ctx context.Context, userID string) ([]Inbox, error) {
+	rows, err := q.db.Query(ctx, getAndDeleteInbox, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Inbox
+	for rows.Next() {
+		var i Inbox
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getBundles = `-- name: GetBundles :many
+SELECT role, bundle FROM rendezvous_bundles
+WHERE room_id = $1
+`
+
+type GetBundlesRow struct {
+	Role   string
+	Bundle []byte
+}
+
+func (q *Queries) GetBundles(ctx context.Context, roomID string) ([]GetBundlesRow, error) {
+	rows, err := q.db.Query(ctx, getBundles, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetBundlesRow
+	for rows.Next() {
+		var i GetBundlesRow
+		if err := rows.Scan(&i.Role, &i.Bundle); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPubkeys = `-- name: GetPubkeys :many
+SELECT role, pubkey FROM rendezvous_pubkeys
+WHERE room_id = $1
+`
+
+type GetPubkeysRow struct {
+	Role   string
+	Pubkey []byte
+}
+
+func (q *Queries) GetPubkeys(ctx context.Context, roomID string) ([]GetPubkeysRow, error) {
+	rows, err := q.db.Query(ctx, getPubkeys, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPubkeysRow
+	for rows.Next() {
+		var i GetPubkeysRow
+		if err := rows.Scan(&i.Role, &i.Pubkey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRoom = `-- name: GetRoom :one
+SELECT id, expires_at FROM rendezvous_rooms
+WHERE id = $1 AND expires_at > NOW()
+`
+
+func (q *Queries) GetRoom(ctx context.Context, id string) (RendezvousRoom, error) {
+	row := q.db.QueryRow(ctx, getRoom, id)
+	var i RendezvousRoom
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const insertInboxMessage = `-- name: InsertInboxMessage :exec
+INSERT INTO inbox (user_id, payload)
+VALUES ($1, $2)
+`
+
+type InsertInboxMessageParams struct {
+	UserID  string
+	Payload []byte
+}
+
+func (q *Queries) InsertInboxMessage(ctx context.Context, arg InsertInboxMessageParams) error {
+	_, err := q.db.Exec(ctx, insertInboxMessage, arg.UserID, arg.Payload)
+	return err
+}
+
+const insertRoom = `-- name: InsertRoom :one
+INSERT INTO rendezvous_rooms (id, expires_at)
+VALUES ($1, $2)
+RETURNING id, expires_at
 `
 
 type InsertRoomParams struct {
 	ID        string
-	CreatedBy string
-	ExpiresAt time.Time
+	ExpiresAt pgtype.Timestamp
 }
 
-func (q *Queries) InsertRoom(ctx context.Context, arg InsertRoomParams) error {
-	_, err := q.db.ExecContext(ctx, insertRoom, arg.ID, arg.CreatedBy, arg.ExpiresAt)
+func (q *Queries) InsertRoom(ctx context.Context, arg InsertRoomParams) (RendezvousRoom, error) {
+	row := q.db.QueryRow(ctx, insertRoom, arg.ID, arg.ExpiresAt)
+	var i RendezvousRoom
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const upsertBundle = `-- name: UpsertBundle :exec
+INSERT INTO rendezvous_bundles (room_id, role, bundle)
+VALUES ($1, $2, $3)
+ON CONFLICT (room_id, role) DO UPDATE SET bundle = EXCLUDED.bundle
+`
+
+type UpsertBundleParams struct {
+	RoomID string
+	Role   string
+	Bundle []byte
+}
+
+func (q *Queries) UpsertBundle(ctx context.Context, arg UpsertBundleParams) error {
+	_, err := q.db.Exec(ctx, upsertBundle, arg.RoomID, arg.Role, arg.Bundle)
+	return err
+}
+
+const upsertPubkey = `-- name: UpsertPubkey :exec
+INSERT INTO rendezvous_pubkeys (room_id, role, pubkey)
+VALUES ($1, $2, $3)
+ON CONFLICT (room_id, role) DO UPDATE SET pubkey = EXCLUDED.pubkey
+`
+
+type UpsertPubkeyParams struct {
+	RoomID string
+	Role   string
+	Pubkey []byte
+}
+
+func (q *Queries) UpsertPubkey(ctx context.Context, arg UpsertPubkeyParams) error {
+	_, err := q.db.Exec(ctx, upsertPubkey, arg.RoomID, arg.Role, arg.Pubkey)
 	return err
 }
