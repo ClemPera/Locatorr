@@ -31,6 +31,7 @@ pub struct RendezvousState {
     pub token: [u8; 32],
 }
 
+//TODO: This should be server side probably
 pub fn generate_rendezvous_invitation(rendezvous_id: String) -> (RendezvousState, RendezvousInvitation) {
     let mut rng = rand::rng();
     let mut token = [0u8; 32];
