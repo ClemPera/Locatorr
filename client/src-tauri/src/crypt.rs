@@ -80,8 +80,155 @@ pub fn compute_safety_fingerprint(bundle_a: &[u8], bundle_b: &[u8]) -> [u8; 12] 
 }
 
 // ============================================================================
+// IDENTITY & ENCRYPTED IDENTITY BUNDLE EXCHANGE
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityBundle {
+    pub device_id: String,
+    pub device_name: String,
+    pub x25519_pub: [u8; 32],
+    pub ml_kem_pub: Vec<u8>,
+    pub ml_dsa_pub: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedContact {
+    pub device_id: String,
+    pub device_name: String,
+    pub fingerprint: String,
+    pub bundle: IdentityBundle,
+    pub paired_at: u64,
+}
+
+pub fn encrypt_identity_bundle(
+    transit_key: &[u8; 32],
+    bundle: &IdentityBundle,
+) -> Result<Vec<u8>, String> {
+    let json_bytes = serde_json::to_vec(bundle).map_err(|e| format!("Serialization error: {}", e))?;
+    let mut rng = rand::rng();
+    let mut nonce_bytes = [0u8; 12];
+    rand::RngExt::fill(&mut rng, &mut nonce_bytes);
+
+    let cipher = Aes256Gcm::new_from_slice(transit_key).map_err(|e| format!("Invalid transit key: {}", e))?;
+    let nonce = AesNonce::try_from(&nonce_bytes[..]).map_err(|e| format!("Invalid nonce: {}", e))?;
+
+    let ciphertext = cipher
+        .encrypt(&nonce, json_bytes.as_slice())
+        .map_err(|e| format!("Encryption failed: {}", e))?;
+
+    let mut result = Vec::with_capacity(12 + ciphertext.len());
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ciphertext);
+    Ok(result)
+}
+
+pub fn decrypt_identity_bundle(
+    transit_key: &[u8; 32],
+    encrypted_data: &[u8],
+) -> Result<IdentityBundle, String> {
+    if encrypted_data.len() < 13 {
+        return Err("Encrypted bundle payload too short".to_string());
+    }
+
+    let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
+    let cipher = Aes256Gcm::new_from_slice(transit_key).map_err(|e| format!("Invalid transit key: {}", e))?;
+    let nonce = AesNonce::try_from(nonce_bytes).map_err(|e| format!("Invalid nonce: {}", e))?;
+
+    let plaintext = cipher
+        .decrypt(&nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+
+    serde_json::from_slice(&plaintext).map_err(|e| format!("Deserialization error: {}", e))
+}
+
+pub struct ContactStore {
+    conn: Connection,
+}
+
+impl ContactStore {
+    pub fn open(path: &str) -> rusqlite::Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS paired_contacts (
+                device_id   TEXT PRIMARY KEY,
+                device_name TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                bundle_json TEXT NOT NULL,
+                paired_at   INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        Ok(Self { conn })
+    }
+
+    pub fn save_contact(&self, contact: &PairedContact) -> rusqlite::Result<()> {
+        let bundle_json = serde_json::to_string(&contact.bundle).unwrap_or_default();
+        self.conn.execute(
+            "INSERT INTO paired_contacts (device_id, device_name, fingerprint, bundle_json, paired_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(device_id) DO UPDATE SET
+                device_name = excluded.device_name,
+                fingerprint = excluded.fingerprint,
+                bundle_json = excluded.bundle_json,
+                paired_at = excluded.paired_at",
+            params![
+                contact.device_id,
+                contact.device_name,
+                contact.fingerprint,
+                bundle_json,
+                contact.paired_at as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_contacts(&self) -> rusqlite::Result<Vec<PairedContact>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT device_id, device_name, fingerprint, bundle_json, paired_at FROM paired_contacts ORDER BY paired_at DESC"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let device_id: String = row.get(0)?;
+            let device_name: String = row.get(1)?;
+            let fingerprint: String = row.get(2)?;
+            let bundle_json: String = row.get(3)?;
+            let paired_at: i64 = row.get(4)?;
+            let bundle: IdentityBundle = serde_json::from_str(&bundle_json).unwrap_or_else(|_| IdentityBundle {
+                device_id: device_id.clone(),
+                device_name: device_name.clone(),
+                x25519_pub: [0u8; 32],
+                ml_kem_pub: vec![],
+                ml_dsa_pub: vec![],
+            });
+            Ok(PairedContact {
+                device_id,
+                device_name,
+                fingerprint,
+                bundle,
+                paired_at: paired_at as u64,
+            })
+        })?;
+
+        let mut contacts = Vec::new();
+        for r in rows {
+            contacts.push(r?);
+        }
+        Ok(contacts)
+    }
+
+    pub fn delete_contact(&self, device_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM paired_contacts WHERE device_id = ?1", params![device_id])?;
+        Ok(())
+    }
+}
+
+// ============================================================================
 // PHASE 2 & 3: HYBRID LOCATION UPDATE, WITH SENDER-BOUND SIG + REPLAY GUARD
 // ============================================================================
+
 
 pub struct LocationUpdatePackage {
     pub sender_id: String,

@@ -30,6 +30,10 @@ sha2 = "0.11"
 aes-gcm = "0.11"
 rand = "0.10"
 rusqlite = { version = "0.37", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["time"] }
+
+
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

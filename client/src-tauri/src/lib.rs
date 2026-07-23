@@ -1,4 +1,5 @@
 mod crypt;
+mod server;
 mod commands;
 
 use commands::PairingManager;
@@ -12,7 +13,12 @@ pub fn run() {
             commands::greet,
             commands::gen_rdv_inv,
             commands::accept_rdv_inv,
-            commands::complete_rdv_pairing
+            commands::complete_rdv_pairing,
+            commands::start_pairing_session,
+            commands::poll_and_complete_pairing,
+            commands::accept_pairing_session,
+            commands::get_paired_contacts,
+            commands::delete_paired_contact
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
