@@ -88,29 +88,50 @@ Wiring & UI:
       chance to see a message).
 - [x] Map visualization (hand-rolled Canvas 2D Web Mercator panel: no basemap, no network
       calls, no new dependencies, and no WebGL so it renders reliably in a webview).
-- [ ] UI notifies on a new location (the map already renders received fixes, but nothing
-      raises a notification yet).
+- [~] UI reacts to a new location. The map, track and readout update from the
+      `tracking://received` event, and fixes delivered while the page was unmounted are restored
+      on mount from `get_received_updates`. An OS notification for a newly received location is
+      **not** implemented: once the activity is gone Rust cannot drive a notification (a
+      Rust-to-Kotlin call panics with no live activity), so a proper implementation means
+      Kotlin-owned polling, which conflicts with Rust owning the crypto. Deliberately deferred.
 
 Android — geolocation:
 
-- [ ] Request the location permissions at runtime, `ACCESS_FINE_LOCATION` and
+- [x] Request the location permissions at runtime, `ACCESS_FINE_LOCATION` and
       `ACCESS_COARSE_LOCATION` together (Android ignores a request that asks for fine without
-      coarse).
-- [ ] Acquire fixes from the Android platform location provider through Kotlin, bridged to the
-      Rust/Tauri code, so the geolocation button works without a Play Services dependency.
-- [ ] Request `POST_NOTIFICATIONS` (API 33+) so the background notification can be shown.
+      coarse), through the plugin's `requestPermissions` command, before sharing starts or a
+      position is read.
+- [x] Acquire fixes from the Android platform location provider through Kotlin, bridged to the
+      Rust/Tauri code, with no Play Services dependency and no new Gradle dependency
+      (`android.location.LocationManager` only, providers queried before use).
+- [x] Request `POST_NOTIFICATIONS` (API 33+) in the same permission call, so the background
+      notification can be shown.
 
 Android — background:
 
-- [ ] Send updates while the app is not in the foreground, via a foreground service with
+- [x] Send updates while the app is not in the foreground, via a foreground service with
       `foregroundServiceType="location"` started from a visible user action.
-- [ ] Keep an always-shown notification for as long as background sharing is active.
-- [ ] Keep the Rust side alive after the activity is destroyed (the app must prevent the
-      default exit on `RunEvent::ExitRequested`; otherwise the crypto state is torn down even
-      though the service is still running).
-- [ ] Receive/poll in the background as well, without racing the in-app poller (the server
-      deletes a message as it returns it, so two concurrent readers can lose one).
-- [ ] Surface a newly received location while backgrounded.
+- [x] Keep an always-shown notification for as long as background sharing is active (Kotlin owns
+      it, it names the target, and it carries a Stop action).
+- [x] Keep the Rust side alive after the activity is destroyed (`api.prevent_exit()` on
+      `RunEvent::ExitRequested`, applied only while tracking is active so a normal quit still
+      works when idle).
+- [x] Receive/poll in the background as well, without racing the in-app poller: one
+      `poll_and_decrypt` behind a `tokio::sync::Mutex`, because the server deletes a message as
+      it returns it and two concurrent readers can lose one.
+- [~] Surface a newly received location while backgrounded. Fixes are buffered and restored on
+      mount, and `receivedCount` is reported in the status event, but no OS notification is
+      raised while the app is closed (see the Phase 3 note above).
+
+### Verification status
+
+Verified at compile and test level only: `cargo test` (21 tests), `svelte-check`, and a real
+`tauri android build --debug -t aarch64` producing an APK and AAB whose merged manifest carries
+the service and all six permissions. **Nothing has been run on a device.** The runtime behaviour
+the design depends on is therefore still to be confirmed: that `prevent_exit` really keeps the
+process alive after the activity is destroyed, that the foreground service is accepted with
+`foregroundServiceType="location"` on the target API level, and that fixes keep arriving while
+the app is backgrounded.
 
 ---
 
@@ -127,3 +148,5 @@ These span more than one phase and are worth doing in order:
 3. **Send/receive command + UI** (Phases 2/3). The crypto and server are done; the missing
    piece is wiring `send_location_update` / `receive_location_update` to Tauri commands and
    the Svelte UI, plus location acquisition and map rendering.
+   **Resolved:** both commands are registered and the Live screen sends, receives and plots;
+   location acquisition comes from the native Android provider.
