@@ -1,7 +1,8 @@
 use crate::crypt::{
-    compute_safety_fingerprint, decrypt_identity_bundle, derive_rendezvous_transit_key,
-    encrypt_identity_bundle, generate_rendezvous_invitation, to_hex_groups, ContactStore,
-    LocationPayload, PairedContact, RendezvousInvitation, RendezvousState, SequenceStore,
+    compute_safety_fingerprint, decrypt_from_identity, decrypt_identity_bundle,
+    decode_location_package, derive_rendezvous_transit_key, encrypt_identity_bundle,
+    generate_rendezvous_invitation, to_hex_groups, ContactStore, LocationPayload, PairedContact,
+    ReceivedLocationUpdate, RendezvousInvitation, RendezvousState, ReplayGuard, SequenceStore,
 };
 use crate::server::ServerClient;
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,13 @@ impl PairingManager {
             .to_string()
     }
 
+    fn replay_db_path(&self) -> String {
+        std::path::Path::new(&self.data_dir)
+            .join("locatorr_replay.sqlite3")
+            .to_string_lossy()
+            .to_string()
+    }
+
     fn open_contacts_db(&self) -> Result<ContactStore, String> {
         ContactStore::open(&self.contacts_db_path()).map_err(|e| format!("Failed to open contacts DB: {}", e))
     }
@@ -47,6 +55,11 @@ impl PairingManager {
     fn open_sequence_store(&self) -> Result<SequenceStore, String> {
         SequenceStore::open(&self.sequence_db_path())
             .map_err(|e| format!("Failed to open sequence DB: {}", e))
+    }
+
+    fn open_replay_guard(&self) -> Result<ReplayGuard, String> {
+        ReplayGuard::open(&self.replay_db_path())
+            .map_err(|e| format!("Failed to open replay guard DB: {}", e))
     }
 }
 
@@ -483,4 +496,80 @@ pub async fn send_location_update(
         sequence,
         timestamp: payload.timestamp,
     })
+}
+
+/// Phase 3: fetch and decrypt every location update queued for this device.
+#[tauri::command]
+pub async fn poll_location_updates(
+    server_url: String,
+    manager: State<'_, PairingManager>,
+) -> Result<Vec<ReceivedLocationUpdate>, String> {
+    let identity = manager
+        .open_contacts_db()?
+        .load_identity()
+        .map_err(|e| format!("Failed to read local identity: {}", e))?
+        .ok_or_else(|| "No local identity on this device; pair this device first".to_string())?;
+
+    // The server deletes messages as it returns them, so this is the only copy
+    // we will ever see of these updates.
+    let messages = ServerClient::new(server_url)
+        .get_inbox(&identity.bundle.device_id)
+        .await?;
+
+    // Everything below is synchronous SQLite work, kept out of the async part
+    // so the non-Sync connection is never held across an await.
+    let contacts_db = manager.open_contacts_db()?;
+    let replay_guard = manager.open_replay_guard()?;
+
+    let mut received = Vec::new();
+    for message in messages {
+        let package = match decode_location_package(&message.payload) {
+            Ok(package) => package,
+            Err(e) => {
+                eprintln!("Skipping inbox message {}: {}", message.id, e);
+                continue;
+            }
+        };
+
+        // Looking the contact up by the package's *claimed* sender_id is safe:
+        // the ML-DSA signature covers sender_id and is verified against the
+        // pinned key of whichever contact that id resolves to, so a forged
+        // sender_id cannot authenticate and is dropped below.
+        let contact = match contacts_db.get_contact(&package.sender_id) {
+            Ok(Some(contact)) => contact,
+            Ok(None) => {
+                eprintln!(
+                    "Skipping inbox message {}: unknown sender {}",
+                    message.id, package.sender_id
+                );
+                continue;
+            }
+            Err(e) => {
+                eprintln!("Skipping inbox message {}: contact lookup failed: {}", message.id, e);
+                continue;
+            }
+        };
+
+        match decrypt_from_identity(&package, &identity, &contact.bundle, &replay_guard) {
+            Ok(payload) => received.push(ReceivedLocationUpdate {
+                sender_id: contact.device_id,
+                sender_name: contact.device_name,
+                sequence: package.sequence,
+                timestamp: payload.timestamp,
+                latitude: payload.latitude,
+                longitude: payload.longitude,
+                accuracy_m: payload.accuracy_m,
+            }),
+            Err(e) => {
+                eprintln!(
+                    "Skipping inbox message {} from {}: {}",
+                    message.id, contact.device_id, e
+                );
+            }
+        }
+    }
+
+    // Ascending by sequence so the caller can treat the last entry as newest.
+    received.sort_by_key(|update| update.sequence);
+    Ok(received)
 }
