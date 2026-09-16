@@ -1,5 +1,55 @@
 use serde::{Deserialize, Serialize};
 
+mod base64_bytes {
+    use base64::Engine;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Base64Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Base64Visitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a base64 encoded string or a sequence of bytes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                base64::engine::general_purpose::STANDARD
+                    .decode(v)
+                    .map_err(serde::de::Error::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(Base64Visitor)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateRoomResponse {
     pub rendezvous_id: String,
@@ -9,23 +59,27 @@ pub struct CreateRoomResponse {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PubkeyPayload {
     pub role: String,
+    #[serde(with = "base64_bytes")]
     pub pubkey: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BundlePayload {
     pub role: String,
+    #[serde(with = "base64_bytes")]
     pub bundle: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct InboxPostPayload {
+    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct InboxMessageItem {
     pub id: i64,
+    #[serde(with = "base64_bytes")]
     pub payload: Vec<u8>,
     pub created_at: String,
 }
@@ -200,5 +254,23 @@ impl ServerClient {
         res.json::<Vec<InboxMessageItem>>()
             .await
             .map_err(|e| format!("Failed to parse inbox response: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pubkey_payload_base64_and_seq_deserialization() {
+        // Go sends base64 string
+        let go_json = r#"[{"role":"initiator","pubkey":"AQID"}]"#;
+        let parsed: Vec<PubkeyPayload> = serde_json::from_str(go_json).expect("should parse base64 string from Go");
+        assert_eq!(parsed[0].pubkey, vec![1, 2, 3]);
+
+        // Legacy / array format
+        let seq_json = r#"[{"role":"initiator","pubkey":[1,2,3]}]"#;
+        let parsed_seq: Vec<PubkeyPayload> = serde_json::from_str(seq_json).expect("should parse array format");
+        assert_eq!(parsed_seq[0].pubkey, vec![1, 2, 3]);
     }
 }
