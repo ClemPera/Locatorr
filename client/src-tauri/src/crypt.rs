@@ -335,7 +335,7 @@ fn blob_to_array<const N: usize>(bytes: &[u8]) -> rusqlite::Result<[u8; N]> {
 impl ContactStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS paired_contacts (
                 device_id   TEXT PRIMARY KEY,
@@ -692,7 +692,7 @@ pub struct SequenceStore {
 impl SequenceStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS sequence_counter (
                 device_id TEXT PRIMARY KEY,
@@ -729,7 +729,7 @@ pub struct ReplayGuard {
 impl ReplayGuard {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS replay_guard (
                 sender_id TEXT PRIMARY KEY,
