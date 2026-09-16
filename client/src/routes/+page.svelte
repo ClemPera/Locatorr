@@ -7,6 +7,7 @@
     getPairedContacts,
     getReceivedUpdates,
     pollLocationUpdates,
+    requestLocationPermissions,
     sendLocationUpdate,
     startTracking,
     stopTracking,
@@ -28,6 +29,7 @@
   const GEO_TIMEOUT_MS = 15000;
   // Offered intervals for background sharing, in milliseconds.
   const TRACKING_INTERVALS = [15000, 30000, 60000];
+  const PERMISSION_SETTINGS_HINT = "If the prompt did not appear, grant it in the app's settings.";
 
   let contacts = $state<PairedContact[]>([]);
   let contactsLoading = $state(true);
@@ -61,6 +63,12 @@
   let trackingIntervalMs = $state(30000);
   let trackingBusy = $state(false);
   let trackingCallError = $state("");
+  // Set when a permission outcome stopped background sharing from starting.
+  let permissionNotice = $state("");
+  let permissionDetail = $state("");
+  // Notification state from the last permission request, when there was one.
+  let notificationsGranted = $state<boolean | null>(null);
+
   // True once a start has returned, or once an event has reported a running state.
   let trackingStarted = $state(false);
   // Event listeners held per component instance, all removed on destroy.
@@ -206,6 +214,19 @@
     return "Could not get a location. Enter coordinates manually.";
   }
 
+  // Asks only when the user does something that needs it, never on its own. Android
+  // answers immediately without a dialog when the permission is already granted.
+  async function ensureLocationPermission(): Promise<{ granted: boolean; error: string }> {
+    try {
+      const status = await requestLocationPermissions();
+      const notifications: string | undefined = status.states?.["notifications"];
+      notificationsGranted = notifications === undefined ? null : notifications === "granted";
+      return { granted: status.granted === true, error: "" };
+    } catch (e) {
+      return { granted: false, error: String(e) };
+    }
+  }
+
   function applyFix(fixLat: number, fixLon: number, fixAccuracy: number | null) {
     latitude = fixLat.toFixed(5);
     longitude = fixLon.toFixed(5);
@@ -216,6 +237,21 @@
     geoError = "";
     const id = ++geoRequest;
     geoBusy = true;
+
+    // Ask before reading: the runtime dialog has to be opened once, or the first
+    // read on Android fails on permission. It is user paced, so the lookup deadline
+    // only starts once it has been answered.
+    const permission = await ensureLocationPermission();
+    if (id !== geoRequest) return;
+    if (!permission.granted) {
+      geoBusy = false;
+      geoError =
+        permission.error === ""
+          ? `Location permission is needed for this device to read a position. ${PERMISSION_SETTINGS_HINT} You can still enter coordinates manually.`
+          : `Location permission could not be requested: ${permission.error} You can still enter coordinates manually.`;
+      return;
+    }
+
     geoTimer = setTimeout(() => {
       // Releases the button without invalidating the request: a fix that arrives
       // after this is still applied, it just no longer blocks the screen.
@@ -324,10 +360,26 @@
   }
 
   async function startBackgroundSharing() {
-    if (trackingTarget === null) return;
+    if (trackingTarget === null || trackingBusy) return;
+    // Stays true across both awaits, so the dialog cannot be answered with a second
+    // tap and start_tracking can never be called twice.
     trackingBusy = true;
     trackingCallError = "";
+    permissionNotice = "";
+    permissionDetail = "";
     try {
+      const permission = await ensureLocationPermission();
+      if (!permission.granted) {
+        // Nothing was started, and the message says so rather than implying the
+        // service is running without permission.
+        permissionNotice =
+          "Location permission is needed to share this device's position, so sharing did not start.";
+        permissionDetail =
+          permission.error === ""
+            ? PERMISSION_SETTINGS_HINT
+            : `The permission request failed: ${permission.error}`;
+        return;
+      }
       await startTracking($serverUrl, trackingTarget.deviceId, trackingIntervalMs);
       // The command returned, so the service is up. It keeps sending this device's
       // position to this contact until it is stopped.
@@ -728,6 +780,13 @@
       {/if}
     </div>
 
+    {#if permissionNotice}
+      <p class="notice">{permissionNotice}</p>
+      {#if permissionDetail}
+        <p class="hint">{permissionDetail}</p>
+      {/if}
+    {/if}
+
     {#if trackingCallError}
       <p class="error">{trackingCallError}</p>
     {/if}
@@ -760,9 +819,17 @@
         {/if}
         {#if $trackingStatus.running}
           <p class="hint">
-            Android keeps a notification in the drawer while this service runs. On Android 13 and
-            later the system can deny notification permission: sharing keeps running, the
-            notification is simply absent. This screen cannot tell which case applies.
+            Android keeps a notification in the drawer while this service runs.
+            {#if notificationsGranted === true}
+              Notification permission was granted when sharing started, so it should be there.
+            {:else if notificationsGranted === false}
+              Notification permission was not granted when sharing started, so it may be absent.
+              Sharing keeps running either way.
+            {:else}
+              On Android 13 and later the system can deny notification permission: sharing keeps
+              running and the notification is simply absent. This screen cannot tell which case
+              applies.
+            {/if}
           </p>
         {/if}
       {:else if trackingStarted}
