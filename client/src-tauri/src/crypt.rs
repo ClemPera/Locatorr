@@ -5,11 +5,11 @@ use aes_gcm::{
 use serde::{Serialize, Deserialize};
 use core::convert::TryFrom;
 use hkdf::Hkdf;
-use ml_dsa::{MlDsa65, Signer, SignatureEncoding, Verifier};
+use ml_dsa::{Keypair, MlDsa65, Signer, SignatureEncoding, Verifier};
 use ml_kem::ml_kem_768::{Ciphertext as KemCiphertext, DecapsulationKey, EncapsulationKey};
-use ml_kem::{Decapsulate, Encapsulate};
-#[cfg(test)]
-use ml_kem::Generate as KemGenerate;
+// `Generate` (from crypto-common) is the trait that provides `generate_from_rng`
+// for both ML-KEM and ML-DSA keys, so a single import serves both.
+use ml_kem::{Decapsulate, Encapsulate, Generate, KeyExport};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
@@ -83,6 +83,28 @@ pub fn compute_safety_fingerprint(bundle_a: &[u8], bundle_b: &[u8]) -> [u8; 12] 
 // IDENTITY & ENCRYPTED IDENTITY BUNDLE EXCHANGE
 // ============================================================================
 
+// Serialized sizes of the post-quantum key material. Kept here so the exchange
+// code can reject truncated bundles instead of failing later with a cryptic
+// parse error.
+pub const ML_KEM_768_PUBLIC_KEY_LEN: usize = 1184;
+pub const ML_KEM_768_SEED_LEN: usize = 64;
+pub const ML_DSA_65_PUBLIC_KEY_LEN: usize = 1952;
+pub const ML_DSA_65_SEED_LEN: usize = 32;
+
+pub fn to_hex_groups(bytes: &[u8]) -> String {
+    bytes
+        .chunks(2)
+        .map(|pair| pair.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// First 8 bytes of the X25519 public key, hex-encoded without separators.
+/// Stable for the lifetime of the device because the private key is persisted.
+fn derive_device_id(x25519_pub: &[u8; 32]) -> String {
+    to_hex_groups(&x25519_pub[0..8]).replace(' ', "")
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityBundle {
@@ -91,6 +113,135 @@ pub struct IdentityBundle {
     pub x25519_pub: [u8; 32],
     pub ml_kem_pub: Vec<u8>,
     pub ml_dsa_pub: Vec<u8>,
+}
+
+/// This device's static identity: generated once and reused for every pairing
+/// and every location update. Only the private material is persisted; the
+/// public bundle is derived from it on load.
+#[derive(Clone, Debug)]
+pub struct LocalIdentity {
+    pub bundle: IdentityBundle,
+    pub x25519_private: [u8; 32],
+    pub ml_kem_seed: [u8; 64],
+    pub ml_dsa_seed: [u8; 32],
+}
+
+impl LocalIdentity {
+    pub fn generate(device_name: &str) -> Self {
+        let mut rng = rand::rng();
+        let x25519_secret = StaticSecret::random_from_rng(&mut rng);
+        let ml_kem_dk: DecapsulationKey = Generate::generate_from_rng(&mut rng);
+        let ml_dsa_sk = ml_dsa::SigningKey::<MlDsa65>::generate_from_rng(&mut rng);
+
+        let x25519_pub = X25519PublicKey::from(&x25519_secret);
+        let ml_kem_seed: [u8; ML_KEM_768_SEED_LEN] = ml_kem_dk
+            .to_seed()
+            .expect("ML-KEM-768 decapsulation key is seed-representable")
+            .into();
+        let ml_dsa_seed: [u8; ML_DSA_65_SEED_LEN] = ml_dsa_sk.to_seed().into();
+
+        let bundle = IdentityBundle {
+            device_id: derive_device_id(x25519_pub.as_bytes()),
+            device_name: device_name.to_string(),
+            x25519_pub: *x25519_pub.as_bytes(),
+            ml_kem_pub: KeyExport::to_bytes(ml_kem_dk.encapsulation_key())
+                .as_slice()
+                .to_vec(),
+            ml_dsa_pub: KeyExport::to_bytes(&ml_dsa_sk.verifying_key())
+                .as_slice()
+                .to_vec(),
+        };
+
+        Self {
+            bundle,
+            x25519_private: x25519_secret.to_bytes(),
+            ml_kem_seed,
+            ml_dsa_seed,
+        }
+    }
+
+    /// Rebuilds the identity (including all public keys) from persisted private
+    /// material. The `device_id` is stored rather than re-derived so that it
+    /// stays stable even if the derivation ever changes.
+    pub fn from_persisted(
+        device_name: &str,
+        device_id: &str,
+        x25519_private: [u8; 32],
+        ml_kem_seed: [u8; 64],
+        ml_dsa_seed: [u8; 32],
+    ) -> Result<Self, String> {
+        let x25519_secret = StaticSecret::from(x25519_private);
+        let x25519_pub = X25519PublicKey::from(&x25519_secret);
+
+        let kem_seed = ml_kem::Seed::try_from(&ml_kem_seed[..])
+            .map_err(|_| "invalid ML-KEM seed length".to_string())?;
+        let kem_dk = DecapsulationKey::from_seed(kem_seed);
+
+        let dsa_seed = ml_dsa::Seed::try_from(&ml_dsa_seed[..])
+            .map_err(|_| "invalid ML-DSA seed length".to_string())?;
+        let dsa_sk = ml_dsa::SigningKey::<MlDsa65>::from_seed(&dsa_seed);
+
+        let bundle = IdentityBundle {
+            device_id: device_id.to_string(),
+            device_name: device_name.to_string(),
+            x25519_pub: *x25519_pub.as_bytes(),
+            ml_kem_pub: KeyExport::to_bytes(kem_dk.encapsulation_key())
+                .as_slice()
+                .to_vec(),
+            ml_dsa_pub: KeyExport::to_bytes(&dsa_sk.verifying_key())
+                .as_slice()
+                .to_vec(),
+        };
+
+        Ok(Self {
+            bundle,
+            x25519_private,
+            ml_kem_seed,
+            ml_dsa_seed,
+        })
+    }
+
+    pub fn signing_key(&self) -> ml_dsa::SigningKey<MlDsa65> {
+        // Seeds are fixed-size arrays, so the conversion cannot fail.
+        let seed = ml_dsa::Seed::from(self.ml_dsa_seed);
+        ml_dsa::SigningKey::from_seed(&seed)
+    }
+
+    pub fn kem_decapsulation_key(&self) -> Result<DecapsulationKey, String> {
+        let seed = ml_kem::Seed::try_from(&self.ml_kem_seed[..])
+            .map_err(|_| "invalid ML-KEM seed length".to_string())?;
+        Ok(DecapsulationKey::from_seed(seed))
+    }
+
+    pub fn x25519_secret(&self) -> StaticSecret {
+        StaticSecret::from(self.x25519_private)
+    }
+}
+
+pub fn encapsulation_key_from_bundle(bundle: &IdentityBundle) -> Result<EncapsulationKey, String> {
+    let key = ml_kem::Key::<EncapsulationKey>::try_from(bundle.ml_kem_pub.as_slice())
+        .map_err(|_| "invalid ML-KEM public key length".to_string())?;
+    EncapsulationKey::new(&key).map_err(|_| "invalid ML-KEM public key".to_string())
+}
+
+pub fn verifying_key_from_bundle(
+    bundle: &IdentityBundle,
+) -> Result<ml_dsa::VerifyingKey<MlDsa65>, String> {
+    let key = ml_dsa::EncodedVerifyingKey::<MlDsa65>::try_from(bundle.ml_dsa_pub.as_slice())
+        .map_err(|_| "invalid ML-DSA public key length".to_string())?;
+    Ok(ml_dsa::VerifyingKey::<MlDsa65>::new(&key))
+}
+
+pub fn validate_peer_bundle(bundle: &IdentityBundle) -> Result<(), String> {
+    if bundle.ml_kem_pub.len() != ML_KEM_768_PUBLIC_KEY_LEN
+        || bundle.ml_dsa_pub.len() != ML_DSA_65_PUBLIC_KEY_LEN
+    {
+        return Err(
+            "peer identity bundle has no post-quantum keys; re-pair this device with the current build"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -148,6 +299,39 @@ pub struct ContactStore {
     conn: Connection,
 }
 
+/// Maps the fixed column order used by every `paired_contacts` query.
+fn row_to_contact(row: &rusqlite::Row) -> rusqlite::Result<PairedContact> {
+    let device_id: String = row.get(0)?;
+    let device_name: String = row.get(1)?;
+    let fingerprint: String = row.get(2)?;
+    let bundle_json: String = row.get(3)?;
+    let paired_at: i64 = row.get(4)?;
+    let bundle: IdentityBundle = serde_json::from_str(&bundle_json).unwrap_or_else(|_| IdentityBundle {
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+        x25519_pub: [0u8; 32],
+        ml_kem_pub: vec![],
+        ml_dsa_pub: vec![],
+    });
+    Ok(PairedContact {
+        device_id,
+        device_name,
+        fingerprint,
+        bundle,
+        paired_at: paired_at as u64,
+    })
+}
+
+fn blob_to_array<const N: usize>(bytes: &[u8]) -> rusqlite::Result<[u8; N]> {
+    bytes.try_into().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Blob,
+            format!("expected {} bytes, got {}", N, bytes.len()).into(),
+        )
+    })
+}
+
 impl ContactStore {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
@@ -159,6 +343,21 @@ impl ContactStore {
                 fingerprint TEXT NOT NULL,
                 bundle_json TEXT NOT NULL,
                 paired_at   INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        // NOTE: the private keys below are stored unencrypted in the local
+        // SQLite file. That is fine while the app owns the file, but production
+        // should move this row into the OS keychain.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS local_identity (
+                id           INTEGER PRIMARY KEY CHECK (id = 1),
+                device_id    TEXT NOT NULL,
+                device_name  TEXT NOT NULL,
+                x25519_priv  BLOB NOT NULL,
+                ml_kem_seed  BLOB NOT NULL,
+                ml_dsa_seed  BLOB NOT NULL,
+                created_at   INTEGER NOT NULL
             )",
             [],
         )?;
@@ -190,27 +389,7 @@ impl ContactStore {
         let mut stmt = self.conn.prepare(
             "SELECT device_id, device_name, fingerprint, bundle_json, paired_at FROM paired_contacts ORDER BY paired_at DESC"
         )?;
-        let rows = stmt.query_map([], |row| {
-            let device_id: String = row.get(0)?;
-            let device_name: String = row.get(1)?;
-            let fingerprint: String = row.get(2)?;
-            let bundle_json: String = row.get(3)?;
-            let paired_at: i64 = row.get(4)?;
-            let bundle: IdentityBundle = serde_json::from_str(&bundle_json).unwrap_or_else(|_| IdentityBundle {
-                device_id: device_id.clone(),
-                device_name: device_name.clone(),
-                x25519_pub: [0u8; 32],
-                ml_kem_pub: vec![],
-                ml_dsa_pub: vec![],
-            });
-            Ok(PairedContact {
-                device_id,
-                device_name,
-                fingerprint,
-                bundle,
-                paired_at: paired_at as u64,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_contact)?;
 
         let mut contacts = Vec::new();
         for r in rows {
@@ -219,9 +398,94 @@ impl ContactStore {
         Ok(contacts)
     }
 
+    pub fn get_contact(&self, device_id: &str) -> rusqlite::Result<Option<PairedContact>> {
+        self.conn
+            .query_row(
+                "SELECT device_id, device_name, fingerprint, bundle_json, paired_at
+                 FROM paired_contacts WHERE device_id = ?1",
+                params![device_id],
+                row_to_contact,
+            )
+            .optional()
+    }
+
     pub fn delete_contact(&self, device_id: &str) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM paired_contacts WHERE device_id = ?1", params![device_id])?;
         Ok(())
+    }
+
+    pub fn load_identity(&self) -> rusqlite::Result<Option<LocalIdentity>> {
+        let row: Option<(String, String, Vec<u8>, Vec<u8>, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT device_id, device_name, x25519_priv, ml_kem_seed, ml_dsa_seed
+                 FROM local_identity WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        row.map(|(device_id, device_name, x25519_priv, ml_kem_seed, ml_dsa_seed)| {
+            LocalIdentity::from_persisted(
+                &device_name,
+                &device_id,
+                blob_to_array(&x25519_priv)?,
+                blob_to_array(&ml_kem_seed)?,
+                blob_to_array(&ml_dsa_seed)?,
+            )
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    e.into(),
+                )
+            })
+        })
+        .transpose()
+    }
+
+    /// Returns this device's persisted identity, creating and storing one on
+    /// first call. `device_id` never changes once stored; only `device_name` is
+    /// updated when the caller supplies a new one.
+    pub fn load_or_create_identity(&self, device_name: &str) -> rusqlite::Result<LocalIdentity> {
+        if let Some(mut identity) = self.load_identity()? {
+            if identity.bundle.device_name != device_name {
+                self.conn.execute(
+                    "UPDATE local_identity SET device_name = ?1 WHERE id = 1",
+                    params![device_name],
+                )?;
+                identity.bundle.device_name = device_name.to_string();
+            }
+            return Ok(identity);
+        }
+
+        let identity = LocalIdentity::generate(device_name);
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        self.conn.execute(
+            "INSERT INTO local_identity (id, device_id, device_name, x25519_priv, ml_kem_seed, ml_dsa_seed, created_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                identity.bundle.device_id,
+                identity.bundle.device_name,
+                identity.x25519_private.as_slice(),
+                identity.ml_kem_seed.as_slice(),
+                identity.ml_dsa_seed.as_slice(),
+                created_at,
+            ],
+        )?;
+        Ok(identity)
     }
 }
 
@@ -229,17 +493,139 @@ impl ContactStore {
 // PHASE 2 & 3: HYBRID LOCATION UPDATE, WITH SENDER-BOUND SIG + REPLAY GUARD
 // ============================================================================
 
+mod base64_bytes {
+    use base64::Engine;
+    use serde::{Deserializer, Serializer};
 
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Base64Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Base64Visitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a base64 encoded string or a sequence of bytes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                base64::engine::general_purpose::STANDARD
+                    .decode(v)
+                    .map_err(serde::de::Error::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(Base64Visitor)
+    }
+}
+
+mod base64_array {
+    use base64::Engine;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S, const N: usize>(bytes: &[u8; N], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        serializer.serialize_str(&encoded)
+    }
+
+    pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ArrayVisitor<const N: usize>;
+
+        impl<'de, const N: usize> serde::de::Visitor<'de> for ArrayVisitor<N> {
+            type Value = [u8; N];
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "a base64 encoded {} byte array", N)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(v)
+                    .map_err(serde::de::Error::custom)?;
+                decoded
+                    .try_into()
+                    .map_err(|_| serde::de::Error::custom(format!("expected {} bytes", N)))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = [0u8; N];
+                for (i, byte) in bytes.iter_mut().enumerate() {
+                    *byte = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(ArrayVisitor::<N>)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationPayload {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy_m: Option<f64>,
+    pub timestamp: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct LocationUpdatePackage {
     pub sender_id: String,
     /// Per-sender monotonic counter. This, not `timestamp`, is what stops replay.
     pub sequence: u64,
+    #[serde(with = "base64_bytes")]
     pub ciphertext: Vec<u8>,
+    #[serde(with = "base64_bytes")]
     pub wrapped_key: Vec<u8>,
+    #[serde(with = "base64_bytes")]
     pub ct_pq: Vec<u8>,
+    #[serde(with = "base64_array")]
     pub x_eph: [u8; 32],
+    #[serde(with = "base64_bytes")]
     pub sig: Vec<u8>,
+    #[serde(with = "base64_array")]
     pub n1: [u8; 12],
+    #[serde(with = "base64_array")]
     pub n2: [u8; 12],
     pub timestamp: u64,
 }
@@ -511,7 +897,7 @@ mod tests {
         let mut rng = rand::rng();
 
         // Set up Bob's static keys (normally done once, at Phase 1 pairing).
-        let bob_kem_dk: DecapsulationKey = KemGenerate::generate_from_rng(&mut rng);
+        let bob_kem_dk: DecapsulationKey = Generate::generate_from_rng(&mut rng);
         let bob_kem_ek = bob_kem_dk.encapsulation_key().clone();
         let bob_x25519_priv = StaticSecret::random_from_rng(&mut rng);
         let bob_x25519_pub = X25519PublicKey::from(&bob_x25519_priv);
@@ -614,5 +1000,183 @@ mod tests {
 
         let _ = std::fs::remove_file(&seq_path);
         let _ = std::fs::remove_file(&guard_path);
+    }
+
+    fn temp_test_path(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "locatorr_test_{}_{}.sqlite3",
+            label,
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn pq_identity_bundle_carries_real_keys() {
+        let identity = LocalIdentity::generate("alice-phone");
+
+        assert_eq!(identity.bundle.ml_kem_pub.len(), ML_KEM_768_PUBLIC_KEY_LEN);
+        assert_eq!(identity.bundle.ml_dsa_pub.len(), ML_DSA_65_PUBLIC_KEY_LEN);
+        assert_eq!(identity.bundle.device_id.len(), 16);
+        assert_eq!(identity.ml_kem_seed.len(), ML_KEM_768_SEED_LEN);
+        assert_eq!(identity.ml_dsa_seed.len(), ML_DSA_65_SEED_LEN);
+
+        // The bundle has to survive the pairing exchange, which is JSON.
+        let json = serde_json::to_vec(&identity.bundle).unwrap();
+        let round_tripped: IdentityBundle = serde_json::from_slice(&json).unwrap();
+        assert_eq!(round_tripped.device_id, identity.bundle.device_id);
+        assert_eq!(round_tripped.x25519_pub, identity.bundle.x25519_pub);
+        assert_eq!(round_tripped.ml_kem_pub, identity.bundle.ml_kem_pub);
+        assert_eq!(round_tripped.ml_dsa_pub, identity.bundle.ml_dsa_pub);
+
+        // The public keys the peer sees must actually be usable.
+        assert!(encapsulation_key_from_bundle(&round_tripped).is_ok());
+        assert!(verifying_key_from_bundle(&round_tripped).is_ok());
+    }
+
+    #[test]
+    fn identity_is_stable_across_reopen() {
+        let path = temp_test_path("stable_identity");
+        let _ = std::fs::remove_file(&path);
+
+        let (device_id, kem_pub, dsa_pub) = {
+            let store = ContactStore::open(path.to_str().unwrap()).unwrap();
+            let identity = store.load_or_create_identity("alice-phone").unwrap();
+            (
+                identity.bundle.device_id.clone(),
+                identity.bundle.ml_kem_pub.clone(),
+                identity.bundle.ml_dsa_pub.clone(),
+            )
+        };
+
+        let store = ContactStore::open(path.to_str().unwrap()).unwrap();
+        let loaded = store
+            .load_identity()
+            .unwrap()
+            .expect("identity should be persisted");
+        assert_eq!(loaded.bundle.device_id, device_id);
+        assert_eq!(loaded.bundle.ml_kem_pub, kem_pub);
+        assert_eq!(loaded.bundle.ml_dsa_pub, dsa_pub);
+
+        // Renaming the device must not rotate the identity.
+        let renamed = store.load_or_create_identity("alice-laptop").unwrap();
+        assert_eq!(renamed.bundle.device_id, device_id);
+        assert_eq!(renamed.bundle.device_name, "alice-laptop");
+        assert_eq!(renamed.bundle.x25519_pub, loaded.bundle.x25519_pub);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn end_to_end_send_between_paired_identities() {
+        let alice = LocalIdentity::generate("alice");
+        let bob = LocalIdentity::generate("bob");
+
+        // What pairing actually transports: JSON-serialized bundles.
+        let bob_as_alice_sees: IdentityBundle =
+            serde_json::from_slice(&serde_json::to_vec(&bob.bundle).unwrap()).unwrap();
+        let alice_as_bob_sees: IdentityBundle =
+            serde_json::from_slice(&serde_json::to_vec(&alice.bundle).unwrap()).unwrap();
+
+        let seq_store = SequenceStore::open(":memory:").unwrap();
+        let guard = ReplayGuard::open(":memory:").unwrap();
+
+        let payload = LocationPayload {
+            latitude: 45.90,
+            longitude: 6.13,
+            accuracy_m: Some(8.0),
+            timestamp: 1_752_000_000,
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+
+        let package = send_location_update(
+            &encapsulation_key_from_bundle(&bob_as_alice_sees).unwrap(),
+            &bob_as_alice_sees.x25519_pub,
+            &alice.signing_key(),
+            alice.bundle.device_id.clone(),
+            seq_store.reserve_next(&alice.bundle.device_id).unwrap(),
+            &payload_bytes,
+            payload.timestamp,
+        );
+
+        let decrypted = receive_location_update(
+            &package,
+            &bob.kem_decapsulation_key().unwrap(),
+            &bob.x25519_secret(),
+            &verifying_key_from_bundle(&alice_as_bob_sees).unwrap(),
+            &guard,
+        )
+        .expect("bob should decrypt alice's update");
+        assert_eq!(decrypted, payload_bytes);
+
+        // Replaying the exact same package must be rejected.
+        let replay = receive_location_update(
+            &package,
+            &bob.kem_decapsulation_key().unwrap(),
+            &bob.x25519_secret(),
+            &verifying_key_from_bundle(&alice_as_bob_sees).unwrap(),
+            &guard,
+        );
+        assert!(replay.is_err(), "replayed package must be rejected");
+    }
+
+    #[test]
+    fn location_package_survives_json_transport() {
+        let alice = LocalIdentity::generate("alice");
+        let bob = LocalIdentity::generate("bob");
+        let guard = ReplayGuard::open(":memory:").unwrap();
+
+        let payload = LocationPayload {
+            latitude: -12.34,
+            longitude: 56.78,
+            accuracy_m: None,
+            timestamp: 1_752_000_000,
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+
+        let package = send_location_update(
+            &encapsulation_key_from_bundle(&bob.bundle).unwrap(),
+            &bob.bundle.x25519_pub,
+            &alice.signing_key(),
+            alice.bundle.device_id.clone(),
+            0,
+            &payload_bytes,
+            payload.timestamp,
+        );
+
+        // This exercises the base64 serde on both `Vec<u8>` and fixed arrays.
+        let wire = serde_json::to_vec(&package).unwrap();
+        let decoded: LocationUpdatePackage = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(decoded.sender_id, package.sender_id);
+        assert_eq!(decoded.x_eph, package.x_eph);
+        assert_eq!(decoded.n1, package.n1);
+        assert_eq!(decoded.n2, package.n2);
+        assert_eq!(decoded.wrapped_key, package.wrapped_key);
+
+        let decrypted = receive_location_update(
+            &decoded,
+            &bob.kem_decapsulation_key().unwrap(),
+            &bob.x25519_secret(),
+            &verifying_key_from_bundle(&alice.bundle).unwrap(),
+            &guard,
+        )
+        .expect("deserialized package should still decrypt");
+        assert_eq!(decrypted, payload_bytes);
+    }
+
+    #[test]
+    fn validate_peer_bundle_rejects_missing_pq_keys() {
+        let mut legacy_bundle = LocalIdentity::generate("legacy").bundle;
+        legacy_bundle.ml_kem_pub.clear();
+        legacy_bundle.ml_dsa_pub.clear();
+
+        let err = validate_peer_bundle(&legacy_bundle).unwrap_err();
+        assert!(
+            err.contains("re-pair"),
+            "error should tell the user how to recover, got: {}",
+            err
+        );
+
+        let modern = LocalIdentity::generate("modern");
+        assert!(validate_peer_bundle(&modern.bundle).is_ok());
     }
 }

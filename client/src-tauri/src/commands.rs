@@ -1,7 +1,7 @@
 use crate::crypt::{
     compute_safety_fingerprint, decrypt_identity_bundle, derive_rendezvous_transit_key,
-    encrypt_identity_bundle, generate_rendezvous_invitation, ContactStore, IdentityBundle,
-    PairedContact, RendezvousInvitation, RendezvousState,
+    encrypt_identity_bundle, generate_rendezvous_invitation, to_hex_groups, ContactStore,
+    LocationPayload, PairedContact, RendezvousInvitation, RendezvousState, SequenceStore,
 };
 use crate::server::ServerClient;
 use serde::{Deserialize, Serialize};
@@ -9,27 +9,44 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::State;
 use tokio::time::{sleep, Duration};
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
+use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 
 pub struct PairingManager {
     pending: Mutex<HashMap<String, RendezvousState>>,
     established: Mutex<HashMap<String, [u8; 32]>>,
-    db_path: String,
+    data_dir: String,
 }
 
 impl PairingManager {
-    pub fn new() -> Self {
-        let app_dir = std::env::temp_dir();
-        let db_path = app_dir.join("locatorr_contacts.sqlite3").to_string_lossy().to_string();
+    pub fn new(data_dir: String) -> Self {
         Self {
             pending: Mutex::new(HashMap::new()),
             established: Mutex::new(HashMap::new()),
-            db_path,
+            data_dir,
         }
     }
 
+    fn contacts_db_path(&self) -> String {
+        std::path::Path::new(&self.data_dir)
+            .join("locatorr.sqlite3")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn sequence_db_path(&self) -> String {
+        std::path::Path::new(&self.data_dir)
+            .join("locatorr_sequence.sqlite3")
+            .to_string_lossy()
+            .to_string()
+    }
+
     fn open_contacts_db(&self) -> Result<ContactStore, String> {
-        ContactStore::open(&self.db_path).map_err(|e| format!("Failed to open contacts DB: {}", e))
+        ContactStore::open(&self.contacts_db_path()).map_err(|e| format!("Failed to open contacts DB: {}", e))
+    }
+
+    fn open_sequence_store(&self) -> Result<SequenceStore, String> {
+        SequenceStore::open(&self.sequence_db_path())
+            .map_err(|e| format!("Failed to open sequence DB: {}", e))
     }
 }
 
@@ -46,31 +63,6 @@ pub struct CompletedRendezvousWithContact {
     pub fingerprint: String,
     pub peer_device_id: String,
     pub peer_device_name: String,
-}
-
-fn to_hex_groups(bytes: &[u8]) -> String {
-    bytes
-        .chunks(2)
-        .map(|pair| pair.iter().map(|b| format!("{:02x}", b)).collect::<String>())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn get_or_generate_local_identity(device_name: &str) -> IdentityBundle {
-    let static_sec = {
-        let mut rng = rand::rng();
-        StaticSecret::random_from_rng(&mut rng)
-    };
-    let x25519_pub = X25519PublicKey::from(&static_sec);
-    let device_id = to_hex_groups(&x25519_pub.as_bytes()[0..8]).replace(' ', "");
-
-    IdentityBundle {
-        device_id,
-        device_name: device_name.to_string(),
-        x25519_pub: *x25519_pub.as_bytes(),
-        ml_kem_pub: vec![],
-        ml_dsa_pub: vec![],
-    }
 }
 
 #[tauri::command]
@@ -158,8 +150,11 @@ pub async fn poll_and_complete_pairing(
         .insert(rendezvous_id.clone(), transit_key);
 
     // 3. Encrypt and upload initiator's identity bundle
-    let my_identity = get_or_generate_local_identity(&device_name);
-    let encrypted_bundle = encrypt_identity_bundle(&transit_key, &my_identity)?;
+    let identity = manager
+        .open_contacts_db()?
+        .load_or_create_identity(&device_name)
+        .map_err(|e| format!("Failed to load local identity: {}", e))?;
+    let encrypted_bundle = encrypt_identity_bundle(&transit_key, &identity.bundle)?;
     server
         .post_bundle(&rendezvous_id, "initiator", &encrypted_bundle)
         .await?;
@@ -243,8 +238,11 @@ pub async fn accept_pairing_session(
         .await?;
 
     // 3. Encrypt and post responder identity bundle to server
-    let my_identity = get_or_generate_local_identity(&device_name);
-    let encrypted_bundle = encrypt_identity_bundle(&transit_key, &my_identity)?;
+    let identity = manager
+        .open_contacts_db()?
+        .load_or_create_identity(&device_name)
+        .map_err(|e| format!("Failed to load local identity: {}", e))?;
+    let encrypted_bundle = encrypt_identity_bundle(&transit_key, &identity.bundle)?;
     server
         .post_bundle(&invitation.rendezvous_id, "responder", &encrypted_bundle)
         .await?;
@@ -383,4 +381,106 @@ pub fn delete_paired_contact(
 ) -> Result<(), String> {
     let db = manager.open_contacts_db()?;
     db.delete_contact(&device_id).map_err(|e| format!("Failed to delete contact: {}", e))
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SentLocationUpdate {
+    pub contact_device_id: String,
+    pub contact_device_name: String,
+    pub sequence: u64,
+    pub timestamp: u64,
+}
+
+/// Phase 2: encrypt, sign and post a location update to a paired contact's inbox.
+#[tauri::command]
+pub async fn send_location_update(
+    server_url: String,
+    contact_device_id: String,
+    latitude: f64,
+    longitude: f64,
+    accuracy_m: Option<f64>,
+    manager: State<'_, PairingManager>,
+) -> Result<SentLocationUpdate, String> {
+    if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
+        return Err("latitude must be a finite number between -90 and 90".to_string());
+    }
+    if !longitude.is_finite() || !(-180.0..=180.0).contains(&longitude) {
+        return Err("longitude must be a finite number between -180 and 180".to_string());
+    }
+    if let Some(accuracy) = accuracy_m {
+        if !accuracy.is_finite() || accuracy < 0.0 {
+            return Err(
+                "accuracy_m must be a finite number greater than or equal to 0".to_string(),
+            );
+        }
+    }
+
+    // All DB work is scoped so the (non-Sync) SQLite handle isn't alive across
+    // the network await below.
+    let (contact, sequence, payload, package_bytes) = {
+        let contacts_db = manager.open_contacts_db()?;
+        let contact = contacts_db
+            .get_contact(&contact_device_id)
+            .map_err(|e| format!("Failed to read contact: {}", e))?
+            .ok_or_else(|| {
+                format!(
+                    "No paired contact with device id {}; pair this device first",
+                    contact_device_id
+                )
+            })?;
+
+        crate::crypt::validate_peer_bundle(&contact.bundle)
+            .map_err(|e| format!("{}: {}", contact.device_name, e))?;
+
+        let identity = contacts_db
+            .load_identity()
+            .map_err(|e| format!("Failed to read local identity: {}", e))?
+            .ok_or_else(|| "No local identity on this device; pair this device first".to_string())?;
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let payload = LocationPayload {
+            latitude,
+            longitude,
+            accuracy_m,
+            timestamp,
+        };
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Failed to encode location payload: {}", e))?;
+
+        let sequence = manager
+            .open_sequence_store()?
+            .reserve_next(&identity.bundle.device_id)
+            .map_err(|e| format!("Failed to reserve sequence number: {}", e))?;
+
+        let bob_kem_pub = crate::crypt::encapsulation_key_from_bundle(&contact.bundle)?;
+        let package = crate::crypt::send_location_update(
+            &bob_kem_pub,
+            &contact.bundle.x25519_pub,
+            &identity.signing_key(),
+            identity.bundle.device_id.clone(),
+            sequence,
+            &payload_bytes,
+            timestamp,
+        );
+        let package_bytes = serde_json::to_vec(&package)
+            .map_err(|e| format!("Failed to encode location package: {}", e))?;
+
+        (contact, sequence, payload, package_bytes)
+    };
+
+    ServerClient::new(server_url)
+        .post_inbox(&contact.device_id, &package_bytes)
+        .await?;
+
+    Ok(SentLocationUpdate {
+        contact_device_id: contact.device_id,
+        contact_device_name: contact.device_name,
+        sequence,
+        timestamp: payload.timestamp,
+    })
 }
