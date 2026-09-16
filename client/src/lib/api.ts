@@ -73,6 +73,13 @@ export interface TrackingStatus {
   lastFixAt: number | null;
 }
 
+export interface LocationPermissionStatus {
+  /** True when Android reports the location permission as granted. */
+  granted: boolean;
+  /** Alias to raw state: "granted", "denied", "prompt" or "prompt-with-rationale". */
+  states: Record<string, string>;
+}
+
 export function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
 }
@@ -160,6 +167,15 @@ export function stopTracking(): Promise<void> {
  */
 export function getCurrentPosition(): Promise<PositionFix> {
   return invoke<PositionFix>("get_current_position");
+}
+
+/**
+ * Opens the real system permission dialog and resolves with the state after the
+ * user has answered, so it can take seconds. It rejects when there is no live
+ * Android activity to host the dialog, such as desktop dev.
+ */
+export function requestLocationPermissions(): Promise<LocationPermissionStatus> {
+  return invoke<LocationPermissionStatus>("request_location_permissions");
 }
 
 export function genRdvInv(): Promise<RendezvousInvitation> {
