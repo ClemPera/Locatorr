@@ -5,6 +5,7 @@
   import {
     getCurrentPosition,
     getPairedContacts,
+    getReceivedUpdates,
     pollLocationUpdates,
     sendLocationUpdate,
     startTracking,
@@ -49,6 +50,9 @@
   let receiveBusy = $state(false);
   let receiveError = $state("");
   let lastCheckedAt = $state<number | null>(null);
+  // Set only when the best-effort restore on mount could not reach the service, and
+  // cleared again once an explicit check has been made.
+  let restoreFailed = $state(false);
 
   // Background sharing keeps its own choice of contact. It is deliberately never
   // filled in for you, not even when only one contact exists: sharing this device's
@@ -278,6 +282,8 @@
       // "already plotted" rule in one place.
       receivedUpdates.update((current) => mergeReceivedUpdates(current, fetched));
       lastCheckedAt = Date.now();
+      // The restore note has served its purpose once the server has been asked.
+      restoreFailed = false;
     } catch (e) {
       receiveError = String(e);
     } finally {
@@ -380,6 +386,19 @@
         // it just has no status to report.
       }
       if (disposed) removeSubscriptions();
+
+      // The catch-up runs only after both listeners are attached, so a fix that
+      // arrives during the call is either inside the result or delivered to the
+      // listener, and the merge de-duplicates the overlap. It never reads the store
+      // before awaiting: the update callback sees whatever is in the store at the
+      // moment it runs, so a concurrent event can only ever be added to, never
+      // overwritten. Best effort, so a failure is a quiet note rather than an error.
+      try {
+        const stored = await getReceivedUpdates();
+        receivedUpdates.update((current) => mergeReceivedUpdates(current, stored));
+      } catch {
+        restoreFailed = true;
+      }
     })();
 
     return () => {
@@ -483,6 +502,13 @@
           {:else}
             Nothing received yet. Check for updates to fetch what the server holds for this device.
           {/if}
+        </p>
+      {/if}
+
+      {#if restoreFailed}
+        <p class="hint">
+          Earlier updates could not be restored. Check for updates to fetch anything the server
+          still holds.
         </p>
       {/if}
     </div>
