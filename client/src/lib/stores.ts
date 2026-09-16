@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import type { PairedContact, ReceivedLocationUpdate } from "$lib/api";
+import type { PairedContact, ReceivedLocationUpdate, TrackingStatus } from "$lib/api";
 
 export const serverUrl = writable<string>("http://localhost:9191");
 export const deviceName = writable<string>("Device-" + Math.floor(1000 + Math.random() * 9000));
@@ -12,6 +12,13 @@ export const pairedContacts = writable<PairedContact[]>([]);
  * mergeReceivedUpdates so one fix cannot be plotted twice.
  */
 export const receivedUpdates = writable<ReceivedLocationUpdate[]>([]);
+
+/**
+ * The last status the native tracker reported, so the panel stays truthful when
+ * the page is left and reopened: the event does not fire again on its own. Null
+ * means nothing has been heard from the tracker since the app started.
+ */
+export const trackingStatus = writable<TrackingStatus | null>(null);
 
 /**
  * Adds fixes that are not already in the list. The key is senderId + sequence, so
