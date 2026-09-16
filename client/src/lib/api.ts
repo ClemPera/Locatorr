@@ -44,6 +44,16 @@ export interface SentLocationUpdate {
   timestamp: number;
 }
 
+export interface ReceivedLocationUpdate {
+  senderId: string;
+  senderName: string;
+  sequence: number;
+  timestamp: number;
+  latitude: number;
+  longitude: number;
+  accuracyM: number | null;
+}
+
 export function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
 }
@@ -98,6 +108,10 @@ export function sendLocationUpdate(
     longitude,
     accuracyM: accuracyM ?? null,
   });
+}
+
+export function pollLocationUpdates(serverUrl: string): Promise<ReceivedLocationUpdate[]> {
+  return invoke<ReceivedLocationUpdate[]>("poll_location_updates", { serverUrl });
 }
 
 export function genRdvInv(): Promise<RendezvousInvitation> {
