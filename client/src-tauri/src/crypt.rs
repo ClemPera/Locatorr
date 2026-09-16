@@ -630,6 +630,27 @@ pub struct LocationUpdatePackage {
     pub timestamp: u64,
 }
 
+/// Decodes a package exactly as it travels through the server inbox. Kept
+/// separate from `receive_location_update` so a malformed message is a normal
+/// error the caller can skip, not a crash.
+pub fn decode_location_package(bytes: &[u8]) -> Result<LocationUpdatePackage, String> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| format!("Failed to decode location package: {}", e))
+}
+
+/// What the UI gets after a successful decrypt: the payload plus who sent it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedLocationUpdate {
+    pub sender_id: String,
+    pub sender_name: String,
+    pub sequence: u64,
+    pub timestamp: u64,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy_m: Option<f64>,
+}
+
 /// Byte string that gets signed and verified. `sender_id` and `sequence` are
 /// bound in here so the signature can't be replayed under a different
 /// identity, and variable-length fields are length-prefixed so there is no
@@ -885,6 +906,31 @@ pub fn receive_location_update(
     payload_cipher
         .decrypt(&nonce_n1, package.ciphertext.as_ref())
         .map_err(|_| "failed to decrypt location payload")
+}
+
+/// Receives a package that just came off the wire against our own persisted
+/// identity and the sender's pinned bundle, returning the decoded payload.
+/// Signature verification and the replay guard happen inside
+/// `receive_location_update`, before any decryption.
+pub fn decrypt_from_identity(
+    package: &LocationUpdatePackage,
+    our_identity: &LocalIdentity,
+    sender_bundle: &IdentityBundle,
+    replay_guard: &ReplayGuard,
+) -> Result<LocationPayload, String> {
+    let plaintext = receive_location_update(
+        package,
+        &our_identity
+            .kem_decapsulation_key()
+            .map_err(|e| format!("invalid local ML-KEM key: {}", e))?,
+        &our_identity.x25519_secret(),
+        &verifying_key_from_bundle(sender_bundle)?,
+        replay_guard,
+    )
+    .map_err(|e| e.to_string())?;
+
+    serde_json::from_slice(&plaintext)
+        .map_err(|e| format!("Failed to decode location payload: {}", e))
 }
 
 #[cfg(test)]
@@ -1178,5 +1224,82 @@ mod tests {
 
         let modern = LocalIdentity::generate("modern");
         assert!(validate_peer_bundle(&modern.bundle).is_ok());
+    }
+
+    #[test]
+    fn polled_package_decrypts_against_persisted_identity() {
+        let alice = LocalIdentity::generate("alice");
+        let bob = LocalIdentity::generate("bob");
+        let guard = ReplayGuard::open(":memory:").unwrap();
+
+        let payload = LocationPayload {
+            latitude: 51.5,
+            longitude: -0.12,
+            accuracy_m: Some(5.0),
+            timestamp: 1_752_000_123,
+        };
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+
+        let package = send_location_update(
+            &encapsulation_key_from_bundle(&bob.bundle).unwrap(),
+            &bob.bundle.x25519_pub,
+            &alice.signing_key(),
+            alice.bundle.device_id.clone(),
+            7,
+            &payload_bytes,
+            payload.timestamp,
+        );
+
+        // Exactly what travels through the server inbox.
+        let wire = serde_json::to_vec(&package).unwrap();
+        let decoded = decode_location_package(&wire).unwrap();
+        assert_eq!(decoded.sequence, 7);
+
+        let received = decrypt_from_identity(&decoded, &bob, &alice.bundle, &guard)
+            .expect("bob should decrypt alice's polled update");
+        assert_eq!(received, payload);
+    }
+
+    #[test]
+    fn decrypt_from_identity_rejects_replay_and_wrong_sender() {
+        let alice = LocalIdentity::generate("alice");
+        let bob = LocalIdentity::generate("bob");
+        let mallory = LocalIdentity::generate("mallory");
+        let guard = ReplayGuard::open(":memory:").unwrap();
+
+        let payload_bytes = serde_json::to_vec(&LocationPayload {
+            latitude: 1.0,
+            longitude: 2.0,
+            accuracy_m: None,
+            timestamp: 1_752_000_000,
+        })
+        .unwrap();
+
+        let package = send_location_update(
+            &encapsulation_key_from_bundle(&bob.bundle).unwrap(),
+            &bob.bundle.x25519_pub,
+            &alice.signing_key(),
+            alice.bundle.device_id.clone(),
+            0,
+            &payload_bytes,
+            1_752_000_000,
+        );
+
+        // First delivery succeeds and advances the replay guard.
+        assert!(decrypt_from_identity(&package, &bob, &alice.bundle, &guard).is_ok());
+
+        // The same package again is a replay.
+        assert!(
+            decrypt_from_identity(&package, &bob, &alice.bundle, &guard).is_err(),
+            "replayed package must be rejected"
+        );
+
+        // Alice's signature cannot verify against Mallory's pinned key; a fresh
+        // guard keeps this from tripping the replay check instead.
+        let fresh_guard = ReplayGuard::open(":memory:").unwrap();
+        assert!(
+            decrypt_from_identity(&package, &bob, &mallory.bundle, &fresh_guard).is_err(),
+            "package must not verify against the wrong sender"
+        );
     }
 }

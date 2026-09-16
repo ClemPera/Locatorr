@@ -27,7 +27,8 @@ pub fn run() {
             commands::accept_pairing_session,
             commands::get_paired_contacts,
             commands::delete_paired_contact,
-            commands::send_location_update
+            commands::send_location_update,
+            commands::poll_location_updates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
