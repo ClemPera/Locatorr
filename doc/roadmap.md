@@ -88,12 +88,14 @@ Wiring & UI:
       chance to see a message).
 - [x] Map visualization (hand-rolled Canvas 2D Web Mercator panel: no basemap, no network
       calls, no new dependencies, and no WebGL so it renders reliably in a webview).
-- [~] UI reacts to a new location. The map, track and readout update from the
-      `tracking://received` event, and fixes delivered while the page was unmounted are restored
-      on mount from `get_received_updates`. An OS notification for a newly received location is
-      **not** implemented: once the activity is gone Rust cannot drive a notification (a
-      Rust-to-Kotlin call panics with no live activity), so a proper implementation means
-      Kotlin-owned polling, which conflicts with Rust owning the crypto. Deliberately deferred.
+- [~] UI updates on a new location, and raises a system notification. The map, track and readout
+      update from the `tracking://received` event, and fixes delivered while the page was
+      unmounted are restored on mount from `get_received_updates`. The *system notification for a
+      received fix* is not implemented: once the activity is gone Rust cannot drive a
+      notification (a Rust-to-Kotlin call panics with no live activity), so a correct background
+      implementation means Kotlin-owned polling, which conflicts with Rust owning the crypto.
+      This is a different notification from the one background sharing needs; the always-shown
+      foreground-service notification is the item below and is implemented.
 
 Android — geolocation:
 
