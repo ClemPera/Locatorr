@@ -81,14 +81,36 @@ Crypto core (implemented in `crypt.rs`, unit-tested):
 - [x] Server read endpoint `GET /inbox/:user_id` (delete-after-read).
 - [x] Client helper `ServerClient::get_inbox`.
 
-Wiring & UI (not yet):
+Wiring & UI:
 
-- [ ] Tauri command to poll and receive a location update (no command registered —
-      `receive_location_update` only lives in `crypt.rs` and its tests).
-- [ ] Background polling while the app is minimized or closed (no background task, plugin,
-      or notification setup).
-- [ ] Map visualization (no map library; no marker rendering at the decrypted coordinates).
-- [ ] UI updates the map and notifies on a new location.
+- [x] Tauri command to poll and receive a location update (`poll_location_updates` in
+      `commands.rs`, registered in `lib.rs`; the server deletes on read, so a poll is the only
+      chance to see a message).
+- [x] Map visualization (hand-rolled Canvas 2D Web Mercator panel: no basemap, no network
+      calls, no new dependencies, and no WebGL so it renders reliably in a webview).
+- [ ] UI notifies on a new location (the map already renders received fixes, but nothing
+      raises a notification yet).
+
+Android — geolocation:
+
+- [ ] Request the location permissions at runtime, `ACCESS_FINE_LOCATION` and
+      `ACCESS_COARSE_LOCATION` together (Android ignores a request that asks for fine without
+      coarse).
+- [ ] Acquire fixes from the Android platform location provider through Kotlin, bridged to the
+      Rust/Tauri code, so the geolocation button works without a Play Services dependency.
+- [ ] Request `POST_NOTIFICATIONS` (API 33+) so the background notification can be shown.
+
+Android — background:
+
+- [ ] Send updates while the app is not in the foreground, via a foreground service with
+      `foregroundServiceType="location"` started from a visible user action.
+- [ ] Keep an always-shown notification for as long as background sharing is active.
+- [ ] Keep the Rust side alive after the activity is destroyed (the app must prevent the
+      default exit on `RunEvent::ExitRequested`; otherwise the crypto state is torn down even
+      though the service is still running).
+- [ ] Receive/poll in the background as well, without racing the in-app poller (the server
+      deletes a message as it returns it, so two concurrent readers can lose one).
+- [ ] Surface a newly received location while backgrounded.
 
 ---
 
