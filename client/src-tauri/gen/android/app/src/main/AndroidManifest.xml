@@ -2,6 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Location tracking. ACCESS_BACKGROUND_LOCATION is deliberately absent: the
+         foreground service is only ever started from a visible user action, and
+         asking for background location alongside a foreground permission makes
+         Android deny the whole request. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
@@ -23,6 +35,15 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Background location tracking. The service is started only from a
+             visible Activity and stops with the process, so it never needs to be
+             restarted from the background. -->
+        <service
+            android:name=".LocationService"
+            android:foregroundServiceType="location"
+            android:exported="false"
+            android:stopWithTask="false" />
 
         <provider
           android:name="androidx.core.content.FileProvider"
