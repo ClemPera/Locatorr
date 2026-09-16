@@ -29,16 +29,15 @@ The server mints a rendezvous room that both devices attach to.
 - [x] Ephemeral public keys are relayed through the server (`POST`/`GET /rendezvous/:id`).
 - [x] Both sides derive the transit key: `HKDF(token-salt, X25519 DH)`.
 - [x] Static identity bundles are exchanged over the encrypted transit channel (AES-256-GCM).
-- [~] Identity bundle carries all three keys. X25519 ✓, but `ml_kem_pub` / `ml_dsa_pub`
-      are still empty (`vec![]`) — PQ identity is not generated or exchanged yet.
+- [x] Identity bundle carries all three keys (X25519, ML-KEM-768, ML-DSA-65).
 - [x] Safety fingerprint `SHA256(sort(bundle_a, bundle_b))[0:12]` is computed and shown on
       both devices for manual out-of-band comparison.
 - [x] Trusted contacts are persisted locally (SQLite) and listed / removable in the Contacts UI.
 - [ ] **Easy-pair:** host renders the invitation as a scannable QR code and the joiner scans
       it — no manual code copy/paste and no out-of-band link. Today the invitation is only a
       copy/paste text code (`encodeInvitation` / `decodeInvitation`).
-- [ ] Static identity is persisted across sessions. `get_or_generate_local_identity` currently
-      regenerates keys and `device_id` on every pairing, so a device's identity changes each time.
+- [x] Static identity is persisted across sessions. The key material is generated once and stored
+      in SQLite under the app data dir, so `device_id` stays stable across pairings and restarts.
 - [ ] Server discards the rendezvous room once the exchange completes (today only the 24 h TTL
       removes it — no explicit deletion).
 
@@ -57,14 +56,16 @@ Crypto core (implemented in `crypt.rs`, unit-tested):
 - [x] Server write endpoint `POST /inbox/:user_id`.
 - [x] Client helper `ServerClient::post_inbox`.
 
-Wiring & UI (not yet):
+Wiring & UI:
 
-- [ ] Tauri command to send a location update (no command registered — `send_location_update`
-      only lives in `crypt.rs` and its tests).
-- [ ] Location acquisition (geolocation plugin or manual coordinate entry).
-- [ ] UI to pick a paired contact and send an update.
-- [ ] Blocked by Phase 1: real PQ keys from pairing (Bob's ML-KEM pub, Alice's ML-DSA priv) —
-      currently empty, so end-to-end sending can't run yet.
+- [x] Tauri command to send a location update (`send_location_update` in `commands.rs`, registered
+      in `lib.rs`; validates the coordinates, loads the contact and local identity, builds and
+      posts the package).
+- [x] Location acquisition (manual latitude/longitude entry, plus a best-effort
+      `navigator.geolocation` lookup when the webview provides one).
+- [x] UI to pick a paired contact and send an update (the Live screen).
+- [x] Real PQ keys from pairing: ML-KEM-768 and ML-DSA-65 key pairs are generated once, persisted,
+      exchanged in the identity bundle, and used by the send path end-to-end.
 
 ---
 
@@ -98,6 +99,7 @@ These span more than one phase and are worth doing in order:
 1. **Real PQ identity** (Phase 1). The whole hybrid design depends on ML-KEM-768 and
    ML-DSA-65 keys being generated once and exchanged at pairing. Until the bundle carries
    real PQ keys and the identity is persisted, Phases 2/3 cannot run end-to-end.
+   **Resolved:** the bundle now carries both PQ public keys and the identity is persisted.
 2. **Easy-pair via QR** (Phase 1). The pairing UX is the manual copy/paste code today; a
    scannable QR (payload in-band, no link) is the intended flow.
 3. **Send/receive command + UI** (Phases 2/3). The crypto and server are done; the missing
