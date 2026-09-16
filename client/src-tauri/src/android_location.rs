@@ -8,6 +8,7 @@
 //! names and channel message shapes are a frozen contract.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use tauri::ipc::Channel;
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{Manager, Runtime};
@@ -72,6 +73,16 @@ struct StartTrackingPayload {
     /// with <name>"); Kotlin falls back to a generic title when empty.
     target_name: String,
     channel: Channel<serde_json::Value>,
+}
+
+/// Kotlin's inherited `requestPermissions` command takes the plugin's own
+/// permission aliases (the `alias` values declared on our `@TauriPlugin`), not
+/// Android permission names.
+#[cfg(target_os = "android")]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestPermissionsPayload<'a> {
+    permissions: &'a [&'a str],
 }
 
 pub struct AndroidLocation<R: Runtime> {
@@ -170,6 +181,24 @@ impl<R: Runtime> AndroidLocation<R> {
             .map_err(|e| format!("getCurrentPosition failed: {}", e))
     }
 
+    /// Opens the Android runtime permission dialog(s) for the given aliases and
+    /// resolves once the user has answered, with alias -> state (lower-case).
+    /// Needs a live activity to host the dialog, hence the window guard.
+    pub async fn request_permissions(
+        &self,
+        aliases: &[&str],
+    ) -> Result<HashMap<String, String>, String> {
+        self.ensure_window()?;
+
+        let payload = RequestPermissionsPayload {
+            permissions: aliases,
+        };
+        self.handle
+            .run_mobile_plugin_async::<HashMap<String, String>>("requestPermissions", payload)
+            .await
+            .map_err(|e| format!("requestPermissions failed: {}", e))
+    }
+
     fn replace_channel(&self, channel: Option<Channel<serde_json::Value>>) -> Result<(), String> {
         let mut slot = self
             .channel
@@ -206,6 +235,13 @@ impl<R: Runtime> AndroidLocation<R> {
     }
 
     pub async fn get_current_position(&self) -> Result<NativePosition, String> {
+        Err(ANDROID_ONLY.to_string())
+    }
+
+    pub async fn request_permissions(
+        &self,
+        _aliases: &[&str],
+    ) -> Result<HashMap<String, String>, String> {
         Err(ANDROID_ONLY.to_string())
     }
 }

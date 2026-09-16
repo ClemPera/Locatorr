@@ -35,7 +35,8 @@ pub fn run() {
             commands::start_tracking,
             commands::stop_tracking,
             commands::get_current_position,
-            commands::get_received_updates
+            commands::get_received_updates,
+            commands::request_location_permissions
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

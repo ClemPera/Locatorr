@@ -113,6 +113,25 @@ pub struct PositionFix {
     pub timestamp: u64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationPermissionStatus {
+    /// True when Android reports the location permission as granted.
+    pub granted: bool,
+    /// Raw alias -> state, lower-case, for diagnostics:
+    /// "granted" | "denied" | "prompt" | "prompt-with-rationale".
+    pub states: HashMap<String, String>,
+}
+
+/// Case-insensitive so a casing change in Kotlin/Android cannot silently turn a
+/// granted permission into "not granted".
+fn location_permission_granted(states: &HashMap<String, String>) -> bool {
+    states
+        .get("location")
+        .map(|state| state.eq_ignore_ascii_case("granted"))
+        .unwrap_or(false)
+}
+
 /// Cap on the UI catch-up buffer. Bounded so a long session cannot grow memory
 /// without limit; oldest entries are dropped first.
 const MAX_RECEIVED_BUFFER: usize = 500;
@@ -1004,6 +1023,28 @@ pub async fn get_current_position(app: AppHandle) -> Result<PositionFix, String>
     })
 }
 
+/// Opens the real Android runtime permission dialog(s). This only resolves once
+/// the user has answered, which can take several seconds; the command is async,
+/// so nothing on the runtime is blocked while the dialog is up.
+#[tauri::command]
+pub async fn request_location_permissions(
+    app: AppHandle,
+) -> Result<LocationPermissionStatus, String> {
+    let states = app
+        .state::<AndroidLocation<tauri::Wry>>()
+        .request_permissions(&["location", "notifications"])
+        .await?;
+
+    let granted = location_permission_granted(&states);
+    // The alias -> state map is useful evidence in logcat. No coordinates here.
+    eprintln!(
+        "[locatorr/android] permission request result: granted={} states={:?}",
+        granted, states
+    );
+
+    Ok(LocationPermissionStatus { granted, states })
+}
+
 async fn stop_tracking_inner(app: &AppHandle) -> Result<(), String> {
     let location = app.state::<AndroidLocation<tauri::Wry>>();
     let was_running = app.state::<TrackingState>().is_running() || location.is_active();
@@ -1402,5 +1443,31 @@ mod tests {
 
         state.end_cleanly();
         assert_eq!(state.received_updates().len(), 2);
+    }
+
+    #[test]
+    fn location_permission_granted_is_case_insensitive() {
+        let granted = HashMap::from([("location".to_string(), "granted".to_string())]);
+        assert!(location_permission_granted(&granted));
+
+        // A casing change must not turn a granted permission into "not granted".
+        let upper = HashMap::from([("location".to_string(), "GRANTED".to_string())]);
+        assert!(location_permission_granted(&upper));
+    }
+
+    #[test]
+    fn location_permission_rejects_non_granted_and_missing_states() {
+        for state in ["denied", "prompt", "prompt-with-rationale"] {
+            let states = HashMap::from([("location".to_string(), state.to_string())]);
+            assert!(
+                !location_permission_granted(&states),
+                "{} must not count as granted",
+                state
+            );
+        }
+
+        // Only notifications granted, location missing entirely.
+        let missing = HashMap::from([("notifications".to_string(), "granted".to_string())]);
+        assert!(!location_permission_granted(&missing));
     }
 }
