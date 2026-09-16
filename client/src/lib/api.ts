@@ -37,6 +37,13 @@ export interface CompletedRendezvousWithContact {
   peerDeviceName: string;
 }
 
+export interface SentLocationUpdate {
+  contactDeviceId: string;
+  contactDeviceName: string;
+  sequence: number;
+  timestamp: number;
+}
+
 export function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
 }
@@ -75,6 +82,22 @@ export function getPairedContacts(): Promise<PairedContact[]> {
 
 export function deletePairedContact(deviceId: string): Promise<void> {
   return invoke<void>("delete_paired_contact", { deviceId });
+}
+
+export function sendLocationUpdate(
+  serverUrl: string,
+  contactDeviceId: string,
+  latitude: number,
+  longitude: number,
+  accuracyM?: number | null
+): Promise<SentLocationUpdate> {
+  return invoke<SentLocationUpdate>("send_location_update", {
+    serverUrl,
+    contactDeviceId,
+    latitude,
+    longitude,
+    accuracyM: accuracyM ?? null,
+  });
 }
 
 export function genRdvInv(): Promise<RendezvousInvitation> {
