@@ -1,12 +1,32 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import Map from "$lib/Map.svelte";
-  import { getPairedContacts, pollLocationUpdates, sendLocationUpdate } from "$lib/api";
-  import type { PairedContact, SentLocationUpdate } from "$lib/api";
-  import { mergeReceivedUpdates, receivedUpdates, serverUrl } from "$lib/stores";
+  import {
+    getCurrentPosition,
+    getPairedContacts,
+    pollLocationUpdates,
+    sendLocationUpdate,
+    startTracking,
+    stopTracking,
+  } from "$lib/api";
+  import type {
+    PairedContact,
+    ReceivedLocationUpdate,
+    SentLocationUpdate,
+    TrackingStatus,
+  } from "$lib/api";
+  import {
+    mergeReceivedUpdates,
+    receivedUpdates,
+    serverUrl,
+    trackingStatus,
+  } from "$lib/stores";
 
   // A lookup that never calls back would leave the button spinning forever.
   const GEO_TIMEOUT_MS = 15000;
+  // Offered intervals for background sharing, in milliseconds.
+  const TRACKING_INTERVALS = [15000, 30000, 60000];
 
   let contacts = $state<PairedContact[]>([]);
   let contactsLoading = $state(true);
@@ -29,6 +49,18 @@
   let receiveBusy = $state(false);
   let receiveError = $state("");
   let lastCheckedAt = $state<number | null>(null);
+
+  // Background sharing keeps its own choice of contact. It is deliberately never
+  // filled in for you, not even when only one contact exists: sharing this device's
+  // position with the wrong person is the failure worth designing against.
+  let trackingTargetId = $state<string | null>(null);
+  let trackingIntervalMs = $state(30000);
+  let trackingBusy = $state(false);
+  let trackingCallError = $state("");
+  // True once a start has returned, or once an event has reported a running state.
+  let trackingStarted = $state(false);
+  // Event listeners held per component instance, all removed on destroy.
+  const unsubscribes: Array<() => void> = [];
 
   const selected = $derived(contacts.find((contact) => contact.deviceId === selectedId) ?? null);
   const lat = $derived(parseCoordinate(latitude, 90));
@@ -68,6 +100,18 @@
   );
   const newestStamp = $derived(newestFix === null ? "--" : formatTimestamp(newestFix.timestamp));
 
+  const trackingTarget = $derived(
+    contacts.find((contact) => contact.deviceId === trackingTargetId) ?? null
+  );
+  const trackingRunning = $derived($trackingStatus?.running === true);
+  // The event is the source of truth once it arrives, but a start that returned
+  // counts too, so the control flips without waiting for the first report.
+  const sharingActive = $derived(trackingRunning || trackingStarted);
+  const canToggleSharing = $derived(
+    !trackingBusy && (sharingActive || trackingTarget !== null)
+  );
+  const sharingLabel = $derived(sharingButtonLabel(trackingBusy, sharingActive));
+
   function parseCoordinate(raw: string, limit: number): number | null {
     const text = raw.trim();
     if (text === "") return null;
@@ -92,6 +136,21 @@
     return `${day} ${time}`;
   }
 
+  function formatMaybeTimestamp(timestamp: number | null | undefined): string {
+    return typeof timestamp === "number" && timestamp > 0 ? formatTimestamp(timestamp) : "none yet";
+  }
+
+  function formatInterval(intervalMs: number | null | undefined): string {
+    return typeof intervalMs === "number" && Number.isFinite(intervalMs) && intervalMs > 0
+      ? `${Math.round(intervalMs / 1000)} s`
+      : "--";
+  }
+
+  function sharingButtonLabel(busy: boolean, active: boolean): string {
+    if (busy) return active ? "Stopping..." : "Starting...";
+    return active ? "Stop sharing" : "Start sharing";
+  }
+
   async function loadContacts() {
     contactsLoading = true;
     contactsError = "";
@@ -104,6 +163,11 @@
       if (selectedId === null && contacts.length === 1) {
         selectedId = contacts[0].deviceId;
       }
+      // The sharing target is only dropped when it disappears. It is never filled
+      // in, however few contacts there are.
+      if (trackingTargetId !== null && !contacts.some((c) => c.deviceId === trackingTargetId)) {
+        trackingTargetId = null;
+      }
     } catch (e) {
       contactsError = String(e);
     } finally {
@@ -111,7 +175,13 @@
     }
   }
 
-  function clearAccuracy() {
+  // Typing a coordinate abandons any lookup that is still out, so a fix that lands
+  // late cannot overwrite what was typed by hand.
+  function handleManualInput() {
+    geoRequest++;
+    clearTimeout(geoTimer);
+    geoBusy = false;
+    geoError = "";
     accuracyM = null;
   }
 
@@ -132,34 +202,63 @@
     return "Could not get a location. Enter coordinates manually.";
   }
 
-  function requestPosition() {
-    geoError = "";
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      geoError = "This device does not report a location. Enter coordinates manually.";
-      return;
-    }
+  function applyFix(fixLat: number, fixLon: number, fixAccuracy: number | null) {
+    latitude = fixLat.toFixed(5);
+    longitude = fixLon.toFixed(5);
+    accuracyM = typeof fixAccuracy === "number" && fixAccuracy > 0 ? fixAccuracy : null;
+  }
 
+  async function requestPosition() {
+    geoError = "";
     const id = ++geoRequest;
     geoBusy = true;
-    geoTimer = setTimeout(
-      () => settleLookup(id, "The location lookup timed out. Enter coordinates manually."),
-      GEO_TIMEOUT_MS
-    );
+    geoTimer = setTimeout(() => {
+      // Releases the button without invalidating the request: a fix that arrives
+      // after this is still applied, it just no longer blocks the screen.
+      if (id !== geoRequest) return;
+      geoBusy = false;
+      geoError = "The position lookup is taking too long. Enter coordinates manually.";
+    }, GEO_TIMEOUT_MS);
+
+    // The device command is the real path: the Android webview has no
+    // navigator.geolocation. The browser API is only a fallback for desktop dev,
+    // so the button is never dead.
+    let commandError = "";
+    try {
+      const fix = await getCurrentPosition();
+      if (id !== geoRequest) return;
+      applyFix(fix.latitude, fix.longitude, fix.accuracyM);
+      settleLookup(id, "");
+      return;
+    } catch (e) {
+      commandError = String(e);
+    }
+    if (id !== geoRequest) return;
+
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      settleLookup(id, commandError);
+      return;
+    }
 
     try {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           if (id !== geoRequest) return;
-          latitude = position.coords.latitude.toFixed(5);
-          longitude = position.coords.longitude.toFixed(5);
-          accuracyM = position.coords.accuracy > 0 ? position.coords.accuracy : null;
+          applyFix(
+            position.coords.latitude,
+            position.coords.longitude,
+            position.coords.accuracy > 0 ? position.coords.accuracy : null
+          );
           settleLookup(id, "");
         },
-        (error) => settleLookup(id, geolocationMessage(error.code)),
+        (error) => {
+          const fallback = geolocationMessage(error.code);
+          settleLookup(id, `${commandError} The browser fallback failed too: ${fallback}`);
+        },
         { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     } catch {
-      settleLookup(id, "Could not get a location. Enter coordinates manually.");
+      settleLookup(id, `${commandError} The browser fallback failed as well.`);
     }
   }
 
@@ -209,11 +308,100 @@
     }
   }
 
+  async function toggleBackgroundSharing() {
+    if (trackingBusy) return;
+    if (sharingActive) {
+      await stopBackgroundSharing();
+      return;
+    }
+    await startBackgroundSharing();
+  }
+
+  async function startBackgroundSharing() {
+    if (trackingTarget === null) return;
+    trackingBusy = true;
+    trackingCallError = "";
+    try {
+      await startTracking($serverUrl, trackingTarget.deviceId, trackingIntervalMs);
+      // The command returned, so the service is up. It keeps sending this device's
+      // position to this contact until it is stopped.
+      trackingStarted = true;
+    } catch (e) {
+      trackingCallError = String(e);
+    } finally {
+      trackingBusy = false;
+    }
+  }
+
+  async function stopBackgroundSharing() {
+    trackingBusy = true;
+    trackingCallError = "";
+    try {
+      await stopTracking();
+      trackingStarted = false;
+      // Do not sit on a stale "running" if the status event does not follow.
+      trackingStatus.update((current) =>
+        current === null ? null : { ...current, running: false }
+      );
+    } catch (e) {
+      trackingCallError = String(e);
+    } finally {
+      trackingBusy = false;
+    }
+  }
+
   onMount(() => {
     loadContacts();
-    return () => clearTimeout(geoTimer);
+
+    // Listening lives here, in the page, so it dies with the page: every listener is
+    // removed on destroy, and one that lands after destroy is removed on arrival.
+    // That is what keeps a hot reload or a navigation from stacking duplicates on
+    // the same event.
+    let disposed = false;
+    const removeSubscriptions = () => {
+      for (const off of unsubscribes.splice(0)) off();
+    };
+
+    void (async () => {
+      try {
+        unsubscribes.push(
+          await listen<TrackingStatus>("tracking://status", (event) => {
+            trackingStatus.set(event.payload);
+            trackingStarted = event.payload.running;
+          }),
+          await listen<ReceivedLocationUpdate[]>("tracking://received", (event) => {
+            // A fix the background service picked up lands in the same store the map
+            // reads, through the same de-duplication rule as an explicit check.
+            receivedUpdates.update((current) => mergeReceivedUpdates(current, event.payload));
+          })
+        );
+      } catch {
+        // Events only exist inside the Tauri shell. Outside it the panel still works,
+        // it just has no status to report.
+      }
+      if (disposed) removeSubscriptions();
+    })();
+
+    return () => {
+      disposed = true;
+      removeSubscriptions();
+      clearTimeout(geoTimer);
+    };
   });
 </script>
+
+{#snippet contactChoice(contact: PairedContact)}
+  <span class="mark" aria-hidden="true"></span>
+  <span class="contact-body">
+    <span class="contact-name">{contact.deviceName}</span>
+    <span class="contact-id">
+      <span class="k">ID</span>
+      <span class="mono v">{contact.deviceId}</span>
+    </span>
+    <span class="eyebrow contact-fp-label">Fingerprint</span>
+    <span class="mono contact-fp">{contact.fingerprint}</span>
+  </span>
+{/snippet}
 
 <div class="live">
   <div class="page-head">
@@ -335,16 +523,7 @@
               aria-label="{contact.deviceName}, {contact.deviceId}"
               bind:group={selectedId}
             />
-            <span class="mark" aria-hidden="true"></span>
-            <span class="contact-body">
-              <span class="contact-name">{contact.deviceName}</span>
-              <span class="contact-id">
-                <span class="k">ID</span>
-                <span class="mono v">{contact.deviceId}</span>
-              </span>
-              <span class="eyebrow contact-fp-label">Fingerprint</span>
-              <span class="mono contact-fp">{contact.fingerprint}</span>
-            </span>
+            {@render contactChoice(contact)}
           </label>
         {/each}
       </div>
@@ -366,7 +545,7 @@
           spellcheck="false"
           placeholder="48.85660"
           bind:value={latitude}
-          oninput={clearAccuracy}
+          oninput={handleManualInput}
           onkeydown={handleCoordinateKey}
         />
         {#if latitude.trim() !== "" && lat === null}
@@ -383,7 +562,7 @@
           spellcheck="false"
           placeholder="2.35220"
           bind:value={longitude}
-          oninput={clearAccuracy}
+          oninput={handleManualInput}
           onkeydown={handleCoordinateKey}
         />
         {#if longitude.trim() !== "" && lon === null}
@@ -455,6 +634,120 @@
       </div>
     {/if}
   </div>
+
+  <div class="panel">
+    <span class="eyebrow">Background sharing</span>
+    <hr class="divider" />
+
+    <p class="muted">
+      Keeps sending this device's position to the contact chosen here, on a fixed interval, while
+      the app is in the background. Pick the contact explicitly: this list never fills itself in.
+    </p>
+
+    {#if contactsLoading && contacts.length === 0}
+      <p class="muted">Loading contacts...</p>
+    {:else if contacts.length === 0}
+      <p class="hint">
+        {#if contactsError}
+          Contacts could not be listed, so there is nothing to choose from. The panel above has
+          the error.
+        {:else}
+          No paired contacts yet. Pair a device before starting background sharing.
+        {/if}
+      </p>
+    {:else}
+      <div class="contact-list">
+        {#each contacts as contact (contact.deviceId)}
+          <!-- Its own radio group: choosing a contact here must not disturb the send
+               target above, and neither choice is ever made for the user. -->
+          <label class="contact-row" class:selected={contact.deviceId === trackingTargetId}>
+            <input
+              type="radio"
+              name="tracking-target"
+              value={contact.deviceId}
+              aria-label="{contact.deviceName}, {contact.deviceId}"
+              bind:group={trackingTargetId}
+            />
+            {@render contactChoice(contact)}
+          </label>
+        {/each}
+      </div>
+    {/if}
+
+    <label class="field interval">
+      <span class="eyebrow">Interval</span>
+      <select class="mono" bind:value={trackingIntervalMs}>
+        {#each TRACKING_INTERVALS as intervalMs (intervalMs)}
+          <option value={intervalMs}>{formatInterval(intervalMs)}</option>
+        {/each}
+      </select>
+    </label>
+    <p class="hint">
+      15 seconds is the floor, so this device is not woken for a fix more often than that.
+    </p>
+
+    <div class="tracking-actions">
+      <button
+        type="button"
+        class="tracking-btn"
+        class:primary={!sharingActive}
+        class:danger={sharingActive}
+        onclick={toggleBackgroundSharing}
+        disabled={!canToggleSharing}
+      >
+        {sharingLabel}
+      </button>
+      {#if !sharingActive && trackingTarget === null && contacts.length > 0}
+        <span class="hint">Choose a contact before starting.</span>
+      {/if}
+    </div>
+
+    {#if trackingCallError}
+      <p class="error">{trackingCallError}</p>
+    {/if}
+
+    <div class="tracking-status">
+      {#if $trackingStatus}
+        <p class="status-head">
+          <span class="live-dot" class:standby={!$trackingStatus.running}></span>
+          <span>{$trackingStatus.running ? "Running" : "Stopped"}</span>
+        </p>
+        <dl class="readout">
+          <dt class="eyebrow">Target</dt>
+          <dd>
+            {$trackingStatus.targetName || "none"}
+            {#if $trackingStatus.targetDeviceId}
+              <span class="mono id-tag">{$trackingStatus.targetDeviceId}</span>
+            {/if}
+          </dd>
+          <dt class="eyebrow">Interval in use</dt>
+          <dd class="mono">{formatInterval($trackingStatus.intervalMs)}</dd>
+          <dt class="eyebrow">Sent</dt>
+          <dd class="mono">{$trackingStatus.sentCount ?? 0}</dd>
+          <dt class="eyebrow">Received</dt>
+          <dd class="mono">{$trackingStatus.receivedCount ?? 0}</dd>
+          <dt class="eyebrow">Last fix</dt>
+          <dd class="mono">{formatMaybeTimestamp($trackingStatus.lastFixAt)}</dd>
+        </dl>
+        {#if $trackingStatus.lastError}
+          <p class="error">{$trackingStatus.lastError}</p>
+        {/if}
+        {#if $trackingStatus.running}
+          <p class="hint">
+            Android keeps a notification in the drawer while this service runs. On Android 13 and
+            later the system can deny notification permission: sharing keeps running, the
+            notification is simply absent. This screen cannot tell which case applies.
+          </p>
+        {/if}
+      {:else if trackingStarted}
+        <p class="hint">
+          Sharing was started, but no status report has arrived from the service yet.
+        </p>
+      {:else}
+        <p class="hint">Not started. Background sharing only sends after you start it here.</p>
+      {/if}
+    </div>
+  </div>
 </div>
 
 <style>
@@ -506,6 +799,42 @@
 
   .received-foot {
     margin-top: var(--space-4);
+  }
+
+  /* Background sharing */
+
+  .interval {
+    max-width: 14rem;
+    margin-top: var(--space-4);
+  }
+
+  .tracking-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+
+  .tracking-actions .hint {
+    margin-top: 0;
+  }
+
+  .tracking-btn {
+    min-width: 12rem;
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .tracking-status {
+    margin-top: var(--space-4);
+  }
+
+  .status-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
+    font-size: var(--text-sm);
   }
 
   .status-line {

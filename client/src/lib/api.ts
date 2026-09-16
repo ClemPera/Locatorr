@@ -54,6 +54,25 @@ export interface ReceivedLocationUpdate {
   accuracyM: number | null;
 }
 
+export interface PositionFix {
+  latitude: number;
+  longitude: number;
+  accuracyM: number | null;
+  timestamp: number;
+}
+
+/** Payload of the "tracking://status" event. */
+export interface TrackingStatus {
+  running: boolean;
+  targetDeviceId: string | null;
+  targetName: string | null;
+  intervalMs: number;
+  sentCount: number;
+  receivedCount: number;
+  lastError: string | null;
+  lastFixAt: number | null;
+}
+
 export function greet(name: string): Promise<string> {
   return invoke<string>("greet", { name });
 }
@@ -112,6 +131,26 @@ export function sendLocationUpdate(
 
 export function pollLocationUpdates(serverUrl: string): Promise<ReceivedLocationUpdate[]> {
   return invoke<ReceivedLocationUpdate[]>("poll_location_updates", { serverUrl });
+}
+
+export function startTracking(
+  serverUrl: string,
+  contactDeviceId: string,
+  intervalMs: number
+): Promise<void> {
+  return invoke<void>("start_tracking", { serverUrl, contactDeviceId, intervalMs });
+}
+
+export function stopTracking(): Promise<void> {
+  return invoke<void>("stop_tracking");
+}
+
+/**
+ * One position from the device. On Android this is the only working source:
+ * navigator.geolocation is not implemented in the webview.
+ */
+export function getCurrentPosition(): Promise<PositionFix> {
+  return invoke<PositionFix>("get_current_position");
 }
 
 export function genRdvInv(): Promise<RendezvousInvitation> {
