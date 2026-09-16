@@ -133,6 +133,15 @@ export function pollLocationUpdates(serverUrl: string): Promise<ReceivedLocation
   return invoke<ReceivedLocationUpdate[]>("poll_location_updates", { serverUrl });
 }
 
+/**
+ * Everything this process has decrypted so far, oldest first, and not cleared when
+ * tracking stops. The "tracking://received" event is fire-and-forget, so this is
+ * how a fix that arrived while the screen was closed gets restored.
+ */
+export function getReceivedUpdates(): Promise<ReceivedLocationUpdate[]> {
+  return invoke<ReceivedLocationUpdate[]>("get_received_updates");
+}
+
 export function startTracking(
   serverUrl: string,
   contactDeviceId: string,
