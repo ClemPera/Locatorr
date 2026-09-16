@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getPairedContacts, sendLocationUpdate } from "$lib/api";
+  import Map from "$lib/Map.svelte";
+  import { getPairedContacts, pollLocationUpdates, sendLocationUpdate } from "$lib/api";
   import type { PairedContact, SentLocationUpdate } from "$lib/api";
-  import { serverUrl } from "$lib/stores";
+  import { mergeReceivedUpdates, receivedUpdates, serverUrl } from "$lib/stores";
 
   // A lookup that never calls back would leave the button spinning forever.
   const GEO_TIMEOUT_MS = 15000;
@@ -25,6 +26,10 @@
   let sendError = $state("");
   let sent = $state<SentLocationUpdate | null>(null);
 
+  let receiveBusy = $state(false);
+  let receiveError = $state("");
+  let lastCheckedAt = $state<number | null>(null);
+
   const selected = $derived(contacts.find((contact) => contact.deviceId === selectedId) ?? null);
   const lat = $derived(parseCoordinate(latitude, 90));
   const lon = $derived(parseCoordinate(longitude, 180));
@@ -38,6 +43,30 @@
       : "--"
   );
   const targetText = $derived(selected ? `→ ${selected.deviceName}` : "no contact selected");
+
+  // The store is ordered oldest first, so the last entry is the newest fix.
+  const newestFix = $derived(
+    $receivedUpdates.length > 0 ? $receivedUpdates[$receivedUpdates.length - 1] : null
+  );
+  // One track at a time: joining points from different senders would draw lines
+  // between unrelated people.
+  const track = $derived(
+    newestFix === null
+      ? []
+      : $receivedUpdates.filter((fix) => fix.senderId === newestFix.senderId)
+  );
+  const senderCount = $derived(new Set($receivedUpdates.map((fix) => fix.senderId)).size);
+  const newestPosition = $derived(
+    newestFix === null
+      ? "--"
+      : `${formatCoordinate(newestFix.latitude)}, ${formatCoordinate(newestFix.longitude)}`
+  );
+  const newestAccuracy = $derived(
+    newestFix !== null && typeof newestFix.accuracyM === "number" && Number.isFinite(newestFix.accuracyM)
+      ? `± ${Math.round(newestFix.accuracyM)} m`
+      : "--"
+  );
+  const newestStamp = $derived(newestFix === null ? "--" : formatTimestamp(newestFix.timestamp));
 
   function parseCoordinate(raw: string, limit: number): number | null {
     const text = raw.trim();
@@ -138,6 +167,25 @@
     if (event.key === "Enter" && canSend) handleSend();
   }
 
+  async function checkForUpdates() {
+    if (receiveBusy) return;
+    receiveBusy = true;
+    receiveError = "";
+    try {
+      const fetched = await pollLocationUpdates($serverUrl);
+      // This screen is not the only writer of the store: an OS-level poller (the
+      // Android background service) pushes into it as well, so merge into what is
+      // already there instead of replacing it, and let the store apply the
+      // "already plotted" rule in one place.
+      receivedUpdates.update((current) => mergeReceivedUpdates(current, fetched));
+      lastCheckedAt = Date.now();
+    } catch (e) {
+      receiveError = String(e);
+    } finally {
+      receiveBusy = false;
+    }
+  }
+
   async function handleSend() {
     if (sendBusy) return;
     if (selected === null) {
@@ -170,7 +218,86 @@
 <div class="live">
   <div class="page-head">
     <h1>Live</h1>
-    <p>Pick a paired contact, set a position, and send it as an encrypted update.</p>
+    <p>Send your position to a paired contact, and follow the positions they send back.</p>
+  </div>
+
+  <div class="panel config-bar">
+    <div class="field">
+      <label class="eyebrow" for="server-url">Rendezvous server</label>
+      <input
+        id="server-url"
+        class="mono"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="http://localhost:9191"
+        bind:value={$serverUrl}
+      />
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span class="eyebrow">Received ({$receivedUpdates.length})</span>
+      <button
+        type="button"
+        class="small-btn"
+        onclick={checkForUpdates}
+        disabled={receiveBusy}
+      >
+        {receiveBusy ? "Checking" : "Check for updates"}
+      </button>
+    </div>
+    <hr class="divider" />
+
+    <Map points={track} height={300} />
+
+    <div class="received-foot">
+      {#if receiveBusy}
+        <p class="status-line">
+          <span class="spinner" aria-hidden="true"></span>
+          Checking the server...
+        </p>
+      {/if}
+
+      {#if receiveError}
+        <p class="error">{receiveError}</p>
+      {/if}
+
+      {#if newestFix}
+        <dl class="readout">
+          <dt class="eyebrow">Sender</dt>
+          <dd>
+            {newestFix.senderName}
+            <span class="mono id-tag">{newestFix.senderId}</span>
+          </dd>
+          <dt class="eyebrow">Position</dt>
+          <dd class="mono">{newestPosition}</dd>
+          <dt class="eyebrow">Accuracy</dt>
+          <dd class="mono">{newestAccuracy}</dd>
+          <dt class="eyebrow">Timestamp</dt>
+          <dd class="mono">{newestStamp}</dd>
+          <dt class="eyebrow">Sequence</dt>
+          <dd class="mono">{newestFix.sequence}</dd>
+        </dl>
+        {#if senderCount > 1}
+          <p class="hint">
+            The track follows {newestFix.senderName}. {senderCount} senders have sent fixes.
+          </p>
+        {/if}
+        {#if lastCheckedAt !== null}
+          <p class="hint">Last check {formatTimestamp(lastCheckedAt)}.</p>
+        {/if}
+      {:else if !receiveBusy && receiveError === ""}
+        <p class="hint">
+          {#if lastCheckedAt !== null}
+            No updates waiting. Checked {formatTimestamp(lastCheckedAt)}.
+          {:else}
+            Nothing received yet. Check for updates to fetch what the server holds for this device.
+          {/if}
+        </p>
+      {/if}
+    </div>
   </div>
 
   <div class="panel">
@@ -289,18 +416,6 @@
     <span class="eyebrow">Transmit</span>
     <hr class="divider" />
 
-    <label class="field">
-      <span class="eyebrow">Rendezvous server</span>
-      <input
-        class="mono"
-        type="text"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="http://localhost:9191"
-        bind:value={$serverUrl}
-      />
-    </label>
-
     <div class="status">
       <span class="live-dot" class:standby={!canSend}></span>
       <span class="mono status-fix">{fixText}</span>
@@ -330,7 +445,7 @@
           <dt class="eyebrow">Contact</dt>
           <dd>
             {sent.contactDeviceName}
-            <span class="mono sent-id">{sent.contactDeviceId}</span>
+            <span class="mono id-tag">{sent.contactDeviceId}</span>
           </dd>
           <dt class="eyebrow">Sequence</dt>
           <dd class="mono">{sent.sequence}</dd>
@@ -355,9 +470,10 @@
 
   .panel-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-2) var(--space-4);
   }
 
   .small-btn {
@@ -367,6 +483,37 @@
 
   .muted {
     font-size: var(--text-sm);
+  }
+
+  .hint {
+    margin-top: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+
+  .config-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  .config-bar .field {
+    flex: 1 1 16rem;
+  }
+
+  /* Received */
+
+  .received-foot {
+    margin-top: var(--space-4);
+  }
+
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--signal);
   }
 
   /* Contact list */
@@ -614,7 +761,7 @@
     color: var(--fg);
   }
 
-  .sent-id {
+  .id-tag {
     margin-left: var(--space-2);
     font-size: var(--text-xs);
     color: var(--fg-faint);
