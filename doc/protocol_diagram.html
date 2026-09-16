@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<title>Hybrid PQ Location Sharing — Protocol Flow</title>
+<style>
+  :root {
+    /* ---- palette: edit these to reskin the whole diagram ---- */
+    --paper:     #F7F6F2;
+    --ink:       #1E1D1A;
+    --ink-soft:  #6B6860;
+    --rule:      #D8D4C8;
+
+    --fn:        #3A4B8C;  /* local Rust function call */
+    --fn-bg:     #E8EAF4;
+    --net:       #0E6E63;  /* network / server endpoint */
+    --net-bg:    #E3F0EC;
+    --oob:       #A8631B;  /* out-of-band / physical-world step */
+    --oob-bg:    #F5E9D8;
+
+    --phase-bg:  #EDEBE3;
+    --note-bg:   #FFFFFF;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Inter", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* Dark theme -- contrast-checked against WCAG AA (4.5:1 for text, 3:1 for
+     the connector lines, which carry flow direction and aren't purely
+     decorative). See the note at the bottom of this file for the numbers. */
+  html[data-theme="dark"] {
+    --paper:     #15181C;
+    --ink:       #ECEAE3;
+    --ink-soft:  #9B978C;
+    --rule:      #61666F;
+
+    --fn:        #8B9DFF;
+    --fn-bg:     #232A45;
+    --net:       #4FD9C7;
+    --net-bg:    #123330;
+    --oob:       #E0A458;
+    --oob-bg:    #332612;
+
+    --phase-bg:  #1D2126;
+    --note-bg:   #1B1E23;
+  }
+
+  body, .node rect, .phase-band, .connector, .col-pill, .note-box rect {
+    transition: background-color 0.15s ease, fill 0.15s ease, stroke 0.15s ease, color 0.15s ease;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    padding: 32px 16px 64px;
+  }
+
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  .subtitle {
+    color: var(--ink-soft);
+    font-size: 13px;
+    margin: 0 0 20px;
+  }
+
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--ink-soft);
+    margin-bottom: 24px;
+  }
+  .legend span.swatch {
+    display: inline-block;
+    width: 11px; height: 11px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: -1px;
+  }
+  .sw-fn  { background: var(--fn); }
+  .sw-net { background: var(--net); }
+  .sw-oob { background: var(--oob); border: 1.5px dashed var(--oob); background: transparent; }
+
+  svg { display: block; width: 100%; height: auto; }
+
+  .col-label {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--ink);
+  }
+  .col-leader { stroke: var(--rule); stroke-width: 1; }
+  .col-pill { fill: var(--paper); stroke: var(--rule); }
+
+  .arrowhead-path {
+    fill: none;
+    stroke: var(--rule);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .phase-band { fill: var(--phase-bg); }
+  .phase-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    fill: var(--ink-soft);
+  }
+
+  .connector { stroke: var(--rule); stroke-width: 1.5; fill: none; }
+  .connector-label {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    fill: var(--ink-soft);
+    font-style: italic;
+  }
+
+  .node rect { stroke-width: 1.5; }
+  .node-fn rect  { fill: var(--fn-bg);  stroke: var(--fn); }
+  .node-net rect { fill: var(--net-bg); stroke: var(--net); }
+  .node-oob rect { fill: var(--oob-bg); stroke: var(--oob); stroke-dasharray: 5 4; }
+
+  .box-title {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .node-fn .box-title  { fill: var(--fn); }
+  .node-net .box-title { fill: var(--net); }
+  .node-oob .box-title { fill: var(--oob); }
+
+  .box-desc {
+    font-family: var(--sans);
+    font-size: 11px;
+    fill: var(--ink-soft);
+  }
+
+  .note {
+    font-family: var(--sans);
+    font-size: 12px;
+    fill: var(--ink-soft);
+  }
+  .note-title {
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    fill: var(--ink);
+  }
+  .note-box rect { fill: var(--note-bg); stroke: var(--rule); stroke-width: 1; }
+  .theme-toggle {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: transparent;
+    color: var(--ink-soft);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  .theme-toggle:hover { color: var(--ink); border-color: var(--ink-soft); }
+
+  .top-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top-row">
+    <div>
+      <h1>Hybrid PQ Location Sharing — Protocol Flow</h1>
+      <p class="subtitle">Alice · Server · Bob — every function call and network hop, room creation through send and receive.</p>
+    </div>
+    <button class="theme-toggle" id="themeToggle" type="button">☀ Light</button>
+  </div>
+
+  <div class="legend">
+    <span><span class="swatch sw-fn"></span>local Rust function call</span>
+    <span><span class="swatch sw-net"></span>network / server endpoint</span>
+    <span><span class="swatch sw-oob"></span>out-of-band (QR, verbal check) — not on the network</span>
+  </div>
+
+  <div id="diagram"></div>
+</div>
+
+<script>
+// ============================================================================
+// DATA — edit this to add, remove, or reorder steps. Layout recomputes
+// automatically: no manual coordinates to fix up.
+//
+// Each step: { lanes: [...], kind: 'fn'|'net'|'oob', name, desc }
+//   lanes: which column(s) this step occupies — ['alice'], ['server'],
+//          ['bob'], ['alice','bob'] (draws two boxes side by side, e.g. both
+//          sides independently computing the same thing), or ['oob'] (draws
+//          one wide box spanning the middle, for physical-world steps).
+//   Connectors are automatic: every box in the previous step connects to
+//   every box in this step. That gives correct fan-out (1 box -> 2 boxes)
+//   and fan-in (2 boxes -> 1 box) for free. Only add asyncGap/asyncLabel if
+//   you want a dashed "time passes" connector instead of a solid one.
+// ============================================================================
+const phases = [
+  {
+    title: "PHASE 0 — ROOM CREATION",
+    steps: [
+      { lanes: ["server"], kind: "net", name: "POST /rendezvous",
+        desc: "Server mints ID + TTL, tied to Alice's account" },
+    ],
+  },
+  {
+    title: "PHASE 1 — PAIRING",
+    steps: [
+      { lanes: ["alice"], kind: "fn", name: "generate_rendezvous_invitation(id)",
+        desc: "Ephemeral X25519 key + random token" },
+      { lanes: ["oob"], kind: "oob", name: "QR code / deep link",
+        desc: "id + X_temp + token — never touches the network" },
+      { lanes: ["server"], kind: "net", name: "POST /rendezvous/{id}",
+        desc: "Both sides upload their ephemeral pubkey" },
+      { lanes: ["alice", "bob"], kind: "fn", name: "derive_rendezvous_transit_key()",
+        desc: "Each side derives the same channel key" },
+      { lanes: ["server"], kind: "net", name: "POST /rendezvous/{id}/bundle",
+        desc: "Upload static bundles, encrypted — opaque to server" },
+      { lanes: ["alice", "bob"], kind: "fn", name: "compute_safety_fingerprint()",
+        desc: "Hash both bundles together" },
+      { lanes: ["oob"], kind: "oob", name: "Compare fingerprint aloud",
+        desc: "Confirms no MITM — keys marked trusted locally" },
+    ],
+  },
+  {
+    title: "PHASE 2 — ALICE SENDS",
+    steps: [
+      { lanes: ["alice"], kind: "fn", name: "SequenceStore::reserve_next()",
+        desc: "Atomic, fsynced, durable sequence number" },
+      { lanes: ["alice"], kind: "fn", name: "EphemeralSecret::random_from_rng()",
+        desc: "Fresh X25519 key for this message" },
+      { lanes: ["alice"], kind: "fn", name: "diffie_hellman()",
+        desc: "Classical ECDH with Bob's static key" },
+      { lanes: ["alice"], kind: "fn", name: "encapsulate_with_rng()",
+        desc: "PQ secret via ML-KEM-768" },
+      { lanes: ["alice"], kind: "fn", name: "Hkdf::expand()",
+        desc: "Combine both secrets into wrap_key" },
+      { lanes: ["alice"], kind: "fn", name: "Aes256Gcm::encrypt() ×2",
+        desc: "Encrypt payload, then wrap the content key" },
+      { lanes: ["alice"], kind: "fn", name: "build_signed_message() + sign()",
+        desc: "Sign sender_id, sequence, key material" },
+      { lanes: ["server"], kind: "net", name: "POST /inbox/{user_id}",
+        desc: "Alice uploads the finished package" },
+    ],
+  },
+  {
+    title: "PHASE 3 — BOB RECEIVES",
+    steps: [
+      { lanes: ["server"], kind: "net", name: "GET /inbox/{user_id}",
+        desc: "Bob polls for new packages", asyncGap: true,
+        asyncLabel: "time passes — Bob polls later" },
+      { lanes: ["bob"], kind: "fn", name: "build_signed_message()",
+        desc: "Bob rebuilds the exact signed bytes" },
+      { lanes: ["bob"], kind: "fn", name: "verify()",
+        desc: "Check ML-DSA-65 signature" },
+      { lanes: ["bob"], kind: "fn", name: "ReplayGuard::check_and_advance()",
+        desc: "Atomic, fsynced — rejects replay, after sig only" },
+      { lanes: ["bob"], kind: "fn", name: "diffie_hellman()",
+        desc: "Mirrors Alice's ECDH" },
+      { lanes: ["bob"], kind: "fn", name: "decapsulate()",
+        desc: "PQ secret via ML-KEM-768" },
+      { lanes: ["bob"], kind: "fn", name: "Hkdf::expand()",
+        desc: "Rebuilds the same wrap_key" },
+      { lanes: ["bob"], kind: "fn", name: "Aes256Gcm::decrypt() ×2",
+        desc: "Unwrap the key, then decrypt the payload" },
+    ],
+  },
+];
+
+// Small annotation callouts, pinned near a given node by (phaseIndex, stepIndex).
+const notes = [
+  { at: [0, 0], side: "right", text: "rendezvous_id is server-issued, not client-picked — closes an abuse / collision gap." },
+  { at: [2, 6], side: "right", text: "server relays opaque bytes only — it never sees plaintext, CK, or any private key." },
+  { at: [3, 3], side: "right", text: "SQLite-backed, fsynced. Survives a crash/restart, unlike an in-memory counter or map." },
+];
+
+// ---- Layout constants ----
+const COLS = { alice: 190, server: 530, bob: 870 };
+const BOX_W = 300, BOX_H = 66, ROW_GAP = 46, PHASE_GAP = 30, HEADER_H = 40;
+const OOB_LEFT = 110, OOB_RIGHT = 950;
+const MARGIN_TOP = 130;
+const VIEW_W = 1050;
+
+function layout() {
+  let y = MARGIN_TOP;
+  let prevBoxes = [];
+  const nodes = [];
+  const connectors = [];
+  const headers = [];
+
+  phases.forEach((phase, pi) => {
+    headers.push({ y, title: phase.title });
+    y += HEADER_H + 24;
+
+    phase.steps.forEach((step, si) => {
+      const currBoxes = [];
+      if (step.lanes.includes("oob")) {
+        currBoxes.push({
+          lane: "oob", cx: (OOB_LEFT + OOB_RIGHT) / 2, top: y, bottom: y + BOX_H,
+          left: OOB_LEFT, width: OOB_RIGHT - OOB_LEFT,
+        });
+      } else {
+        step.lanes.forEach(lane => {
+          const cx = COLS[lane];
+          currBoxes.push({ lane, cx, top: y, bottom: y + BOX_H, left: cx - BOX_W / 2, width: BOX_W });
+        });
+      }
+
+      prevBoxes.forEach(p => {
+        currBoxes.forEach(c => {
+          connectors.push({
+            x1: p.cx, y1: p.bottom, x2: c.cx, y2: c.top,
+            dashed: !!step.asyncGap, label: step.asyncGap ? step.asyncLabel : null,
+          });
+        });
+      });
+
+      currBoxes.forEach(b => {
+        nodes.push({ ...b, kind: step.kind, name: step.name, desc: step.desc, phaseIndex: pi, stepIndex: si });
+      });
+
+      prevBoxes = currBoxes;
+      y += BOX_H + ROW_GAP;
+    });
+    y += PHASE_GAP;
+  });
+
+  return { nodes, connectors, headers, totalHeight: y + 40 };
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function render() {
+  const { nodes, connectors, headers, totalHeight } = layout();
+  const parts = [];
+
+  parts.push(`<svg viewBox="0 0 ${VIEW_W} ${totalHeight}" xmlns="http://www.w3.org/2000/svg" role="img">`);
+  parts.push(`<title>Full protocol flow: pairing through location update, Alice, server, Bob</title>`);
+  parts.push(`<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+  <path class="arrowhead-path" d="M2 1L8 5L2 9"/>
+  </marker></defs>`);
+
+  // column headers + leader lines
+  ["alice", "server", "bob"].forEach(lane => {
+    const cx = COLS[lane];
+    parts.push(`<line x1="${cx}" y1="70" x2="${cx}" y2="${totalHeight - 20}" class="col-leader"/>`);
+    const label = lane === "server" ? "Server" : lane[0].toUpperCase() + lane.slice(1);
+    parts.push(`<rect x="${cx - 55}" y="30" width="110" height="28" rx="14" class="col-pill"/>`);
+    parts.push(`<text x="${cx}" y="44" text-anchor="middle" dominant-baseline="central" class="col-label">${label}</text>`);
+  });
+
+  // phase headers
+  headers.forEach(h => {
+    parts.push(`<rect x="60" y="${h.y}" width="930" height="${HEADER_H}" rx="4" class="phase-band"/>`);
+    parts.push(`<text x="525" y="${h.y + HEADER_H / 2}" text-anchor="middle" dominant-baseline="central" class="phase-title">${esc(h.title)}</text>`);
+  });
+
+  // connectors (drawn before nodes so boxes sit on top of line ends)
+  connectors.forEach(c => {
+    const dash = c.dashed ? ` stroke-dasharray="6 5"` : "";
+    parts.push(`<line x1="${c.x1}" y1="${c.y1}" x2="${c.x2}" y2="${c.y2}" class="connector"${dash} marker-end="url(#arrow)"/>`);
+    if (c.label) {
+      const vertical = c.x1 === c.x2;
+      const lx = vertical ? c.x1 + 14 : (c.x1 + c.x2) / 2;
+      const ly = vertical ? (c.y1 + c.y2) / 2 : (c.y1 + c.y2) / 2 - 6;
+      const anchor = vertical ? "start" : "middle";
+      parts.push(`<text x="${lx}" y="${ly}" text-anchor="${anchor}" class="connector-label">${esc(c.label)}</text>`);
+    }
+  });
+
+  // nodes
+  nodes.forEach(n => {
+    const cls = n.kind === "fn" ? "node-fn" : n.kind === "net" ? "node-net" : "node-oob";
+    parts.push(`<g class="node ${cls}">`);
+    parts.push(`<rect x="${n.left}" y="${n.top}" width="${n.width}" height="${BOX_H}" rx="9"/>`);
+    parts.push(`<text x="${n.cx}" y="${n.top + 26}" text-anchor="middle" class="box-title">${esc(n.name)}</text>`);
+    parts.push(`<text x="${n.cx}" y="${n.top + 46}" text-anchor="middle" class="box-desc">${esc(n.desc)}</text>`);
+    parts.push(`</g>`);
+  });
+
+  // note callouts
+  notes.forEach(note => {
+    const target = nodes.find(n => n.phaseIndex === note.at[0] && n.stepIndex === note.at[1]);
+    if (!target) return;
+    const noteW = 250, noteH = 54;
+    const nx = note.side === "right" ? Math.min(target.left + target.width + 24, VIEW_W - noteW - 10) : 10;
+    const ny = target.top - 4;
+    parts.push(`<g class="note-box">`);
+    parts.push(`<rect x="${nx}" y="${ny}" width="${noteW}" height="${noteH}" rx="6"/>`);
+    parts.push(`<text x="${nx + 12}" y="${ny + 18}" class="note-title">note</text>`);
+    parts.push(wrapText(note.text, nx + 12, ny + 34, noteW - 24, 12));
+    parts.push(`</g>`);
+    // small connector from note to the node it annotates
+    parts.push(`<line x1="${target.left + target.width}" y1="${target.top + BOX_H / 2}" x2="${nx}" y2="${ny + noteH / 2}" class="connector" stroke-dasharray="2 3"/>`);
+  });
+
+  parts.push(`</svg>`);
+  document.getElementById("diagram").innerHTML = parts.join("\n");
+}
+
+// Minimal manual word-wrap for note text (2 lines max, keeps it simple).
+function wrapText(text, x, y, maxWidth, fontSize) {
+  const charsPerLine = Math.floor(maxWidth / (fontSize * 0.52));
+  const words = text.split(" ");
+  const lines = [];
+  let curr = "";
+  words.forEach(w => {
+    if ((curr + " " + w).trim().length > charsPerLine) {
+      lines.push(curr.trim());
+      curr = w;
+    } else {
+      curr = (curr + " " + w).trim();
+    }
+  });
+  if (curr) lines.push(curr);
+  return lines.slice(0, 3).map((line, i) =>
+    `<text x="${x}" y="${y + i * 14}" class="note">${esc(line)}</text>`
+  ).join("\n");
+}
+
+render();
+
+const themeToggle = document.getElementById("themeToggle");
+function syncToggleLabel() {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  themeToggle.textContent = isDark ? "☀ Light" : "☾ Dark";
+}
+themeToggle.addEventListener("click", () => {
+  const isDark = document.documentElement.dataset.theme === "dark";
+  document.documentElement.dataset.theme = isDark ? "light" : "dark";
+  syncToggleLabel();
+});
+syncToggleLabel();
+</script>
+</body>
+</html>
