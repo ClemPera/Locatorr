@@ -140,7 +140,7 @@ pub async fn poll_and_complete_pairing(
         .try_into()
         .map_err(|_| "Invalid responder pubkey length".to_string())?;
 
-    // 2. Derive transit key & fingerprint
+    // 2. Derive transit key
     let state = manager
         .pending
         .lock()
@@ -148,11 +148,8 @@ pub async fn poll_and_complete_pairing(
         .remove(&rendezvous_id)
         .ok_or_else(|| "No pending invitation found for this session".to_string())?;
 
-    let my_pub = X25519PublicKey::from(&state.x_temp_sec);
     let transit_key =
         derive_rendezvous_transit_key(state.x_temp_sec, &responder_pub_bytes, &state.token);
-    let fingerprint =
-        to_hex_groups(&compute_safety_fingerprint(my_pub.as_bytes(), &responder_pub_bytes));
 
     manager
         .established
@@ -182,7 +179,11 @@ pub async fn poll_and_complete_pairing(
     let enc_responder_bundle = responder_bundle_bytes
         .ok_or_else(|| "Timed out waiting for responder identity bundle".to_string())?;
 
-    // 5. Decrypt responder bundle and save paired contact
+    // 5. Compute safety fingerprint over both encrypted bundles (protocol step 6)
+    let fingerprint =
+        to_hex_groups(&compute_safety_fingerprint(&encrypted_bundle, &enc_responder_bundle));
+
+    // 6. Decrypt responder bundle and save paired contact
     let peer_bundle = decrypt_identity_bundle(&transit_key, &enc_responder_bundle)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -221,15 +222,13 @@ pub async fn accept_pairing_session(
     let server = ServerClient::new(server_url);
 
     // 1. Generate responder ephemeral keys & derive transit key
-    let (my_pub, transit_key, fingerprint) = {
+    let (my_pub, transit_key) = {
         let mut rng = rand::rng();
         let my_secret = EphemeralSecret::random_from_rng(&mut rng);
         let my_pub = X25519PublicKey::from(&my_secret);
         let transit_key =
             derive_rendezvous_transit_key(my_secret, &invitation.x_temp_pub, &invitation.token);
-        let fingerprint =
-            to_hex_groups(&compute_safety_fingerprint(my_pub.as_bytes(), &invitation.x_temp_pub));
-        (my_pub, transit_key, fingerprint)
+        (my_pub, transit_key)
     };
 
     manager
@@ -265,7 +264,11 @@ pub async fn accept_pairing_session(
     let enc_initiator_bundle = initiator_bundle_bytes
         .ok_or_else(|| "Timed out waiting for initiator identity bundle".to_string())?;
 
-    // 5. Decrypt initiator bundle and save paired contact
+    // 5. Compute safety fingerprint over both encrypted bundles (protocol step 6)
+    let fingerprint =
+        to_hex_groups(&compute_safety_fingerprint(&encrypted_bundle, &enc_initiator_bundle));
+
+    // 6. Decrypt initiator bundle and save paired contact
     let peer_bundle = decrypt_identity_bundle(&transit_key, &enc_initiator_bundle)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
