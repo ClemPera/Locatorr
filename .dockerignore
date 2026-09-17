@@ -1,0 +1,18 @@
+# Keep the Docker build context small — the Dockerfile only needs the Go server.
+# The build context is the repo root, so without this every build would upload
+# the multi-gigabyte Rust target/ directories and node_modules to the builder.
+
+.git
+.github
+
+client
+target
+doc
+
+server/server
+
+**/.env
+**/*.env
+
+**/*.md
+LICENSE
