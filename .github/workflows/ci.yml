@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+  pull_request:
 
 jobs:
   test-rust-client:
@@ -62,6 +63,10 @@ jobs:
         working-directory: client
         run: npm run check
 
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
   test-go-server:
     name: Go Server Tests
     runs-on: ubuntu-latest
@@ -74,6 +79,18 @@ jobs:
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
+
+      - name: Check formatting
+        working-directory: server
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      - name: Build
+        working-directory: server
+        run: go build ./...
 
       - name: Run server tests
         working-directory: server
