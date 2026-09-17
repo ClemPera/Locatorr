@@ -34,17 +34,3 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["time", "sync"] }
 base64 = "0.22"
 
-
-
-
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-# Tauri's `send_channel_data_handler` internally unwraps; a panic on the
-# Kotlin channel path cannot be fully excluded by our own code, and with
-# `panic = "abort"` it would take down the whole process, foreground service
-# included. `unwind` costs a little binary size, and desktop is out of scope.
-panic = "unwind"
-strip = true
