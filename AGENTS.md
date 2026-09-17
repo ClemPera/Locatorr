@@ -18,7 +18,7 @@ First run needs `cd client && npm ci`, and `server/.env` copied from `server/.en
 A host `cargo test` does **not** compile `#[cfg(target_os = "android")]` code, so it cannot catch breakage in the mobile bridge. Check that separately, without a full Gradle build:
 
 ```sh
-NDK=$HOME/Android/Sdk/ndk/29.0.13846066   # adjust to your installed NDK
+NDK=$HOME/Android/Sdk/ndk/27.0.12077973   # CI pins ndk;27.0.12077973, so match it; adjust to your installed NDK
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 export CC_aarch64_linux_android="$TC/bin/aarch64-linux-android28-clang" \
        AR_aarch64_linux_android="$TC/bin/llvm-ar" \
@@ -38,7 +38,9 @@ cd client/src-tauri && cargo check --target aarch64-linux-android --offline
 ## Non-obvious
 
 - Background location is one frozen contract spanning `src/android_location.rs`, `src/commands.rs` and `gen/android/.../LocationPlugin.kt`: the Kotlin method names and the channel `kind` values (`fix` / `error` / `permissionDenied` / `stopped`) are shared. Kotlin owns the cadence, the foreground service and its notification; Rust owns crypto, HTTP and policy.
-- `gen/android` contains hand-written Kotlin. Deleting it to re-run `tauri android init` loses the location plugin.
+- `gen/android` is not purely generated. Beyond the location plugin it carries hand-added release signing: `app/build.gradle.kts` has `signingConfigs` reading `keystore.properties` (written by CI from secrets) plus `dependenciesInfo` flags. Re-running `tauri android init` loses those too.
+- The Cargo workspace root is the repo root, so builds land in `target/`, not `client/src-tauri/target/`. `client/src-tauri/Cargo.lock` is a stale leftover from before the workspace existed and no longer matches the root `Cargo.lock`; the root one is authoritative. Any tooling that names a binary path must say `target/release/<bin>`.
+- `main.go` calls `godotenv.Load()` inside `Must`, so it panics if `server/.env` is missing entirely rather than degrading to environment variables. That's why `server/Dockerfile` ships an empty `.env` placeholder.
 - `GET /inbox/:user_id` deletes on read, so only one poll may be in flight: `poll_and_decrypt` behind `PairingManager::poll_lock`. Two concurrent readers can silently lose a message.
 - Release Android builds block cleartext HTTP (`usesCleartextTraffic=false`); testing against a plain-HTTP server needs a debug build.
 
@@ -48,3 +50,4 @@ cd client/src-tauri && cargo check --target aarch64-linux-android --offline
 - Crypto wire formats: `client/src-tauri/src/crypt.rs`. Frontend crypto helpers and their tests: `client/src/lib/crypt.ts`, `client/src/lib/__tests__/`.
 - Android bridge and foreground service: `client/src-tauri/src/android_location.rs` plus the Kotlin plugin above.
 - CI and releases: `.github/workflows/`.
+- Releases are tag-driven: `client-v*` → `release-client.yml`, `server-v*` → `release-server.yml`, both producing draft releases. A tag only starts a workflow that already exists on the tagged commit, so merge before tagging.
