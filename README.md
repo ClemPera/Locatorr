@@ -95,4 +95,4 @@ Issues and pull requests are welcome. CI gates on the Rust, frontend and Go suit
 
 ## License
 
-[AGPL-3.0](LICENSE). If you run a modified version as a network service, the license requires you to offer the corresponding source to its users.
+[AGPL-3.0-or-later](LICENSE). If you run a modified version as a network service, the license requires you to offer the corresponding source to its users.
