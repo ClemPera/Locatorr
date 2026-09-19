@@ -4,6 +4,9 @@
 
 End-to-end encrypted location sharing for Android and desktop: your contacts can see where you are, and the server that carries the updates cannot.
 
+> [!WARNING]
+> **Proof of concept, unaudited.** This code has not been reviewed or audited, and it is not production-ready. Do not rely on it as the only thing protecting anyone whose safety depends on their location.
+
 ## What it is
 
 Sharing your location usually means handing it to a platform. Locatorr pairs the two devices directly instead: an update is encrypted and signed on the sender's device and only decrypted on the recipient's. The server in the middle is a store-and-forward relay that only ever holds ciphertext, and you run it, so it does not need to be trusted.
