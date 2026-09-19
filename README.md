@@ -4,9 +4,6 @@
 
 End-to-end encrypted location sharing for Android and desktop: your contacts can see where you are, and the server that carries the updates cannot.
 
-> [!WARNING]
-> **Proof of concept, unaudited.** This code has not been reviewed or audited, and it is not production-ready. Do not rely on it as the only thing protecting anyone whose safety depends on their location. Only the latest commit on `main` is maintained; there are no supported releases.
-
 ## What it is
 
 Sharing your location usually means handing it to a platform. Locatorr pairs the two devices directly instead: an update is encrypted and signed on the sender's device and only decrypted on the recipient's. The server in the middle is a store-and-forward relay that only ever holds ciphertext, and you run it, so it does not need to be trusted.
@@ -45,6 +42,51 @@ cd client && npx tauri android build --debug -t aarch64
 The client and the server are configured with the server URL in the app's Pair and Live screens; a phone testing against a machine on your LAN needs that machine's address, not `localhost`.
 
 Full build, test and release matrix: [`AGENTS.md`](AGENTS.md) (and `.github/workflows/`).
+
+## Prebuilt builds
+
+### Server image
+
+The server is published as [`clempera8/locatorr-server`](https://hub.docker.com/r/clempera8/locatorr-server) on Docker Hub, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the matching `server-v*` release tag. It needs a Postgres it can reach and takes its configuration from the environment; the schema is created on first start, so there is no migration step.
+
+```sh
+docker run -d --name locatorr-server \
+  -p 9191:9191 \
+  --restart unless-stopped \
+  -e DATABASE_URL='postgres://user:password@db.example:5432/locatorr' \
+  clempera8/locatorr-server:latest
+```
+
+`DATABASE_URL` is the only setting the server reads, the same value `server/.env.example` documents for a source build. To reuse that file, pass `--env-file server/.env`; a host named `localhost` in it then refers to the container itself, not your machine. The server listens on `9191`.
+
+A Compose stack that starts Postgres alongside it:
+
+```yaml
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: locatorr
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    image: clempera8/locatorr-server:latest
+    environment:
+      DATABASE_URL: postgres://postgres:change-me@postgres:5432/locatorr
+    ports:
+      - "9191:9191"
+
+volumes:
+  pgdata:
+```
+
+Linux server tarballs are attached to the `server-v*` releases, if you would rather not use Docker.
+
+### Client binaries
+
+Prebuilt client builds are attached to the `client-v*` releases on the [releases page](https://github.com/ClemPera/Locatorr/releases): `.deb`, `.rpm` and `.AppImage` packages plus tarballs for Linux x86_64 and arm64, a universal `.dmg` for macOS, `.exe` and `.msi` installers for Windows, and an arm64 Android APK. The APK is a release build, so it refuses cleartext HTTP: use it against an HTTPS server, or build a debug APK when testing against a local server over plain HTTP (see Quickstart).
 
 ## Architecture
 
